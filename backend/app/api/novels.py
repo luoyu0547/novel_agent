@@ -5,7 +5,15 @@ from app.core.database import get_db
 from app.core.response import ApiResponse
 from app.models.user import User
 from app.core.security import get_current_user
-from app.schemas.novel import ChapterCreate, ChapterUpdate, NovelCreate, NovelUpdate
+from app.schemas.novel import (
+    ChapterCreate,
+    ChapterOut,
+    ChapterUpdate,
+    NovelCreate,
+    NovelListItem,
+    NovelOut,
+    NovelUpdate,
+)
 from app.services.novel_service import NovelService
 
 router = APIRouter(prefix="/novels", tags=["小说"])
@@ -17,7 +25,7 @@ async def list_novels(
     db: AsyncSession = Depends(get_db),
 ):
     novels = await NovelService(db).list(current_user.id)
-    return ApiResponse.success(data=novels)
+    return ApiResponse.success(data=[NovelListItem.model_validate(n) for n in novels])
 
 
 @router.post("")
@@ -27,7 +35,7 @@ async def create_novel(
     db: AsyncSession = Depends(get_db),
 ):
     novel = await NovelService(db).create(current_user.id, body.title, body.description)
-    return ApiResponse.success(data=novel, message="小说创建成功")
+    return ApiResponse.success(data=NovelListItem.model_validate(novel), message="小说创建成功")
 
 
 @router.get("/{novel_id}")
@@ -37,7 +45,7 @@ async def get_novel(
     db: AsyncSession = Depends(get_db),
 ):
     novel = await NovelService(db).get(novel_id)
-    return ApiResponse.success(data=novel)
+    return ApiResponse.success(data=NovelOut.model_validate(novel))
 
 
 @router.put("/{novel_id}")
@@ -48,7 +56,7 @@ async def update_novel(
     db: AsyncSession = Depends(get_db),
 ):
     novel = await NovelService(db).update(current_user.id, novel_id, body.title, body.description)
-    return ApiResponse.success(data=novel, message="小说更新成功")
+    return ApiResponse.success(data=NovelOut.model_validate(novel), message="小说更新成功")
 
 
 @router.delete("/{novel_id}")
@@ -69,7 +77,7 @@ async def create_chapter(
     db: AsyncSession = Depends(get_db),
 ):
     chapter = await NovelService(db).create_chapter(current_user.id, novel_id, body.title, body.content)
-    return ApiResponse.success(data=chapter, message="章节创建成功")
+    return ApiResponse.success(data=ChapterOut.model_validate(chapter), message="章节创建成功")
 
 
 @router.get("/{novel_id}/chapters/{chapter_id}")
@@ -80,7 +88,7 @@ async def get_chapter(
     db: AsyncSession = Depends(get_db),
 ):
     chapter = await NovelService(db).get_chapter(novel_id, chapter_id)
-    return ApiResponse.success(data=chapter)
+    return ApiResponse.success(data=ChapterOut.model_validate(chapter))
 
 
 @router.put("/{novel_id}/chapters/{chapter_id}")
@@ -92,7 +100,7 @@ async def update_chapter(
     db: AsyncSession = Depends(get_db),
 ):
     chapter = await NovelService(db).update_chapter(current_user.id, novel_id, chapter_id, body.title, body.content)
-    return ApiResponse.success(data=chapter, message="章节保存成功")
+    return ApiResponse.success(data=ChapterOut.model_validate(chapter), message="章节保存成功")
 
 
 @router.delete("/{novel_id}/chapters/{chapter_id}")
