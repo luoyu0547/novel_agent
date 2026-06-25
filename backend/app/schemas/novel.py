@@ -1,22 +1,43 @@
 import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class NovelCreate(BaseModel):
     title: str
     description: Optional[str] = None
 
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: str) -> str:
+        if len(v) > 200:
+            raise ValueError("标题长度不能超过 200 个字符")
+        return v
+
 
 class NovelUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
 
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: str) -> str:
+        if v is not None and len(v) > 200:
+            raise ValueError("标题长度不能超过 200 个字符")
+        return v
+
 
 class ChapterCreate(BaseModel):
     title: str
     content: str = ""
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: str) -> str:
+        if len(v) > 200:
+            raise ValueError("标题长度不能超过 200 个字符")
+        return v
 
 
 class ChapterUpdate(BaseModel):

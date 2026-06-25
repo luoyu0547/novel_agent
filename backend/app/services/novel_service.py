@@ -17,9 +17,9 @@ class NovelService:
     async def list(self, user_id: int):
         return await self.repo.list_by_user(user_id)
 
-    async def get(self, novel_id: int):
+    async def get(self, novel_id: int, user_id: int):
         novel = await self.repo.get_by_id(novel_id)
-        if not novel:
+        if not novel or novel.user_id != user_id:
             raise NotFound("小说不存在")
         return novel
 
@@ -47,9 +47,9 @@ class NovelService:
             raise Forbidden("无权在该小说下创建章节")
         return await self.chapter_repo.create(novel_id, title, content)
 
-    async def get_chapter(self, novel_id: int, chapter_id: int):
+    async def get_chapter(self, novel_id: int, chapter_id: int, user_id: int):
         novel = await self.repo.get_by_id(novel_id)
-        if not novel:
+        if not novel or novel.user_id != user_id:
             raise NotFound("小说不存在")
         chapter = await self.chapter_repo.get_by_id(chapter_id)
         if not chapter or chapter.novel_id != novel_id:

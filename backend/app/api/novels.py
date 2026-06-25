@@ -44,7 +44,7 @@ async def get_novel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    novel = await NovelService(db).get(novel_id)
+    novel = await NovelService(db).get(novel_id, current_user.id)
     return ApiResponse.success(data=NovelOut.model_validate(novel))
 
 
@@ -87,7 +87,7 @@ async def get_chapter(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    chapter = await NovelService(db).get_chapter(novel_id, chapter_id)
+    chapter = await NovelService(db).get_chapter(novel_id, chapter_id, current_user.id)
     return ApiResponse.success(data=ChapterOut.model_validate(chapter))
 
 

@@ -36,6 +36,7 @@ def create_app() -> FastAPI:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Environment: %s", settings.APP_ENV)
         logger.info("Database: %s", settings.db_driver)
+        logger.info("Listening at http://0.0.0.0:8000")
         routes_count = len([r for r in app.routes if hasattr(r, "methods")])
         logger.info("Routes registered: %d", routes_count)
 
