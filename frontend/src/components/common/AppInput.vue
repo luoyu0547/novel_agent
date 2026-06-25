@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{ modelValue: string; type?: 'text' | 'password'; placeholder?: string; error?: string; size?: 'sm' | 'md' | 'lg' }>()
+defineProps<{ modelValue: string; type?: 'text' | 'password'; placeholder?: string; error?: string; size?: 'sm' | 'md' | 'lg'; disabled?: boolean }>()
 defineEmits<{ 'update:modelValue': [value: string] }>()
 </script>
 
@@ -8,6 +8,7 @@ defineEmits<{ 'update:modelValue': [value: string] }>()
     <input
       :type="type || 'text'" :value="modelValue" :placeholder="placeholder"
       :class="[`app-input__field`, `app-input__field--${size || 'md'}`]"
+      :disabled="disabled"
       @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)"
     />
     <p v-if="error" class="app-input__error">{{ error }}</p>

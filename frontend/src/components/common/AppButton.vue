@@ -11,12 +11,14 @@ defineEmits<{ click: [e: MouseEvent] }>()
 
 <template>
   <button
+    type="button"
     class="app-btn"
     :class="[`app-btn--${variant}`, `app-btn--${size}`, { 'app-btn--loading': loading }]"
     :disabled="disabled || loading"
+    :aria-busy="loading"
     @click="$emit('click', $event)"
   >
-    <span v-if="loading" class="app-btn__spinner" />
+    <span v-if="loading" class="app-btn__spinner" aria-hidden="true" />
     <slot />
   </button>
 </template>
