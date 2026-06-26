@@ -1,5 +1,4 @@
 @use 'variables' as *;
-@use 'element/index.scss';
 
 .page-enter-active, .page-leave-active { transition: opacity $transition-normal; }
 .page-enter-from, .page-leave-to { opacity: 0; }
