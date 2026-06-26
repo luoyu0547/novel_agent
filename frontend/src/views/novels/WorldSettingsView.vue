@@ -6,7 +6,6 @@ import AppCard from '@/components/common/AppCard.vue'
 import AppConfirm from '@/components/common/AppConfirm.vue'
 import AppEmpty from '@/components/common/AppEmpty.vue'
 import AppInput from '@/components/common/AppInput.vue'
-import AppLayout from '@/components/layout/AppLayout.vue'
 import AppModal from '@/components/common/AppModal.vue'
 import AppTextarea from '@/components/common/AppTextarea.vue'
 import NovelWorkspaceTabs from '@/components/novels/NovelWorkspaceTabs.vue'
@@ -74,7 +73,6 @@ async function handleDelete() {
 </script>
 
 <template>
-  <AppLayout>
     <div class="settings">
       <NovelWorkspaceTabs :novel-id="novelId" />
       <div class="settings__header">
@@ -125,7 +123,6 @@ async function handleDelete() {
 
       <AppConfirm :visible="deleteTarget !== null" title="删除设定" content="确定要删除这条世界观设定吗？" confirm-text="删除" confirm-variant="danger" @update:visible="deleteTarget = null" @confirm="handleDelete" @cancel="deleteTarget = null" />
     </div>
-  </AppLayout>
 </template>
 
 <style scoped lang="scss">

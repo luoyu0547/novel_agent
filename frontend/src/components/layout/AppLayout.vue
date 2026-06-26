@@ -7,7 +7,7 @@ import AppSidebar from './AppSidebar.vue'
     <AppHeader />
     <div class="app-layout__body">
       <AppSidebar />
-      <main class="app-layout__content"><slot /></main>
+      <main class="app-layout__content"><router-view /></main>
     </div>
   </div>
 </template>

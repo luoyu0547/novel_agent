@@ -2,7 +2,6 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novels'
-import AppLayout from '@/components/layout/AppLayout.vue'
 import AppButton from '@/components/common/AppButton.vue'
 import AppCard from '@/components/common/AppCard.vue'
 import AppModal from '@/components/common/AppModal.vue'
@@ -60,7 +59,6 @@ function closeDeleteConfirm() { deleteTarget.value = null }
 function goEdit() { if (selectedChapterId.value) router.push(`/novels/${novelId.value}/edit/${selectedChapterId.value}`) }
 </script>
 <template>
-  <AppLayout>
     <div v-if="novelStore.currentNovel" class="novel-detail">
       <div class="novel-detail__sidebar">
         <div class="novel-detail__sidebar-header"><h3 class="novel-detail__novel-title">{{ novelStore.currentNovel.title }}</h3><AppButton size="sm" variant="secondary" @click="showChapterModal = true">+ 章节</AppButton></div>
@@ -102,7 +100,6 @@ function goEdit() { if (selectedChapterId.value) router.push(`/novels/${novelId.
       <div style="height:12px" />
       <AppTextarea v-model="editStyleGuide" placeholder="风格指南" :rows="4" />
     </AppModal>
-  </AppLayout>
 </template>
 <style scoped lang="scss">
 @use '@/styles/variables' as *;

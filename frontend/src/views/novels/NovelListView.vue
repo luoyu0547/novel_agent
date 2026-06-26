@@ -2,7 +2,6 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novels'
-import AppLayout from '@/components/layout/AppLayout.vue'
 import AppButton from '@/components/common/AppButton.vue'
 import AppCard from '@/components/common/AppCard.vue'
 import AppModal from '@/components/common/AppModal.vue'
@@ -32,7 +31,6 @@ function closeDeleteConfirm() { deleteTarget.value = null }
 function formatDate(d: string) { return new Date(d).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }) }
 </script>
 <template>
-  <AppLayout>
     <div class="novel-list">
       <div class="novel-list__header"><h2 class="novel-list__title">我的小说</h2><AppButton size="sm" @click="showCreateModal = true">新建小说</AppButton></div>
       <div v-if="novelStore.novels.length === 0" class="novel-list__empty"><AppEmpty text="还没有小说，开始创作吧" /></div>
@@ -54,7 +52,6 @@ function formatDate(d: string) { return new Date(d).toLocaleDateString('zh-CN', 
       </AppModal>
       <AppConfirm :visible="deleteTarget !== null" title="删除小说" content="确定要删除这部小说吗？此操作不可恢复。" confirm-text="删除" :confirm-variant="'danger'" @confirm="handleDelete" @cancel="closeDeleteConfirm" @update:visible="closeDeleteConfirm" />
     </div>
-  </AppLayout>
 </template>
 <style scoped lang="scss">
 @use '@/styles/variables' as *;

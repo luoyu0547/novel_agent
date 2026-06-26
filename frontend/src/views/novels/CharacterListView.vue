@@ -6,7 +6,6 @@ import AppCard from '@/components/common/AppCard.vue'
 import AppConfirm from '@/components/common/AppConfirm.vue'
 import AppEmpty from '@/components/common/AppEmpty.vue'
 import AppInput from '@/components/common/AppInput.vue'
-import AppLayout from '@/components/layout/AppLayout.vue'
 import AppModal from '@/components/common/AppModal.vue'
 import AppTextarea from '@/components/common/AppTextarea.vue'
 import NovelWorkspaceTabs from '@/components/novels/NovelWorkspaceTabs.vue'
@@ -75,7 +74,6 @@ async function handleDelete() {
 </script>
 
 <template>
-  <AppLayout>
     <div class="characters">
       <NovelWorkspaceTabs :novel-id="novelId" />
       <div class="characters__header">
@@ -123,7 +121,6 @@ async function handleDelete() {
 
       <AppConfirm :visible="deleteTarget !== null" title="删除角色" content="确定要删除这个角色卡吗？" confirm-text="删除" :confirm-variant="'danger'" @confirm="handleDelete" @cancel="deleteTarget = null" @update:visible="() => deleteTarget = null" />
     </div>
-  </AppLayout>
 </template>
 
 <style scoped lang="scss">
