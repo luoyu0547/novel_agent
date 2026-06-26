@@ -28,12 +28,17 @@ declare module 'vue' {
     ElButton: typeof import('element-plus/es')['ElButton']
     ElContainer: typeof import('element-plus/es')['ElContainer']
     ElHeader: typeof import('element-plus/es')['ElHeader']
+    ElInput: typeof import('element-plus/es')['ElInput']
     ElMain: typeof import('element-plus/es')['ElMain']
     ElMenu: typeof import('element-plus/es')['ElMenu']
     ElMenuItem: typeof import('element-plus/es')['ElMenuItem']
+    ElOption: typeof import('element-plus/es')['ElOption']
+    ElSelect: typeof import('element-plus/es')['ElSelect']
+    ElText: typeof import('element-plus/es')['ElText']
     NovelWorkspaceTabs: typeof import('./src/components/novels/NovelWorkspaceTabs.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    WritingEditor: typeof import('./src/components/editor/WritingEditor.vue')['default']
   }
 }
 
@@ -55,10 +60,15 @@ declare global {
   const ElButton: typeof import('element-plus/es')['ElButton']
   const ElContainer: typeof import('element-plus/es')['ElContainer']
   const ElHeader: typeof import('element-plus/es')['ElHeader']
+  const ElInput: typeof import('element-plus/es')['ElInput']
   const ElMain: typeof import('element-plus/es')['ElMain']
   const ElMenu: typeof import('element-plus/es')['ElMenu']
   const ElMenuItem: typeof import('element-plus/es')['ElMenuItem']
+  const ElOption: typeof import('element-plus/es')['ElOption']
+  const ElSelect: typeof import('element-plus/es')['ElSelect']
+  const ElText: typeof import('element-plus/es')['ElText']
   const NovelWorkspaceTabs: typeof import('./src/components/novels/NovelWorkspaceTabs.vue')['default']
   const RouterLink: typeof import('vue-router')['RouterLink']
   const RouterView: typeof import('vue-router')['RouterView']
+  const WritingEditor: typeof import('./src/components/editor/WritingEditor.vue')['default']
 }
