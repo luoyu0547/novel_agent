@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import Forbidden, NotFound
+from app.core.exceptions import NotFound
 from app.repositories.memory_repo import CharacterRepo, WorldSettingRepo
 from app.repositories.novel_repo import NovelRepo
 from app.schemas.memory import CharacterCreate, CharacterUpdate, WorldSettingCreate, WorldSettingUpdate
