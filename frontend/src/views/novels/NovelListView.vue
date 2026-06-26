@@ -13,16 +13,22 @@ import AppEmpty from '@/components/common/AppEmpty.vue'
 
 const router = useRouter()
 const novelStore = useNovelStore()
-const showCreateModal = ref(false); const newTitle = ref(''); const newDescription = ref(''); const deleteTarget = ref<number | null>(null)
+const showCreateModal = ref(false); const newTitle = ref(''); const newDescription = ref(''); const newGenre = ref(''); const newStyleGuide = ref(''); const deleteTarget = ref<number | null>(null)
 
 onMounted(async () => { await novelStore.loadNovels() })
 
 async function handleCreate() {
   if (!newTitle.value) return
-  await novelStore.createNovel({ title: newTitle.value, description: newDescription.value || null })
-  showCreateModal.value = false; newTitle.value = ''; newDescription.value = ''
+  await novelStore.createNovel({
+    title: newTitle.value,
+    description: newDescription.value || null,
+    genre: newGenre.value || null,
+    style_guide: newStyleGuide.value || null,
+  })
+  showCreateModal.value = false; newTitle.value = ''; newDescription.value = ''; newGenre.value = ''; newStyleGuide.value = ''
 }
 async function handleDelete() { if (deleteTarget.value !== null) { await novelStore.deleteNovel(deleteTarget.value); deleteTarget.value = null } }
+function closeDeleteConfirm() { deleteTarget.value = null }
 function formatDate(d: string) { return new Date(d).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }) }
 </script>
 <template>
@@ -41,8 +47,12 @@ function formatDate(d: string) { return new Date(d).toLocaleDateString('zh-CN', 
         <AppInput v-model="newTitle" placeholder="小说标题" />
         <div style="height:12px" />
         <AppTextarea v-model="newDescription" placeholder="小说简介（可选）" :rows="3" />
+        <div style="height:12px" />
+        <AppInput v-model="newGenre" placeholder="小说类型（可选）" />
+        <div style="height:12px" />
+        <AppTextarea v-model="newStyleGuide" placeholder="风格指南（可选）" :rows="4" />
       </AppModal>
-      <AppConfirm v-model:visible="deleteTarget !== null" title="删除小说" content="确定要删除这部小说吗？此操作不可恢复。" confirm-text="删除" :confirm-variant="'danger'" @confirm="handleDelete" @cancel="deleteTarget = null" />
+      <AppConfirm :visible="deleteTarget !== null" title="删除小说" content="确定要删除这部小说吗？此操作不可恢复。" confirm-text="删除" :confirm-variant="'danger'" @confirm="handleDelete" @cancel="closeDeleteConfirm" @update:visible="closeDeleteConfirm" />
     </div>
   </AppLayout>
 </template>
