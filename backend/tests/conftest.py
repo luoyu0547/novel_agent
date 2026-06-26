@@ -1,8 +1,13 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 import pytest
 from httpx import ASGITransport, AsyncClient
+
+dotenv_path = Path(__file__).resolve().parents[1] / ".env"
+if dotenv_path.exists():
+    load_dotenv(dotenv_path)
 
 TEST_DB_PATH = Path(__file__).resolve().parents[1] / "test_novel_agent.db"
 os.environ["APP_ENV"] = "test"

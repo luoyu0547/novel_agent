@@ -14,17 +14,21 @@
 - Run a single test: `.venv/bin/python -m pytest tests/test_phase_1_manual_memory.py::test_character_profile_crud -x -q`
 - All `app.*` imports work because `pytest.ini` sets `pythonpath = .`
 - First-time setup: `python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && cp .env.example .env`
+- First-time frontend: `npm install` (requires Node ^22.18.0 or >=24.12.0)
 
 ## Frontend commands
 ```sh
 npm run dev          # dev server (port 5173, proxies /api → localhost:8000)
 npm run type-check   # vue-tsc --build (NOT plain tsc)
-npm run test:unit    # vitest
-npm run test:e2e     # playwright test
-npm run lint         # oxlint then eslint (sequential, not parallel)
-npm run build        # type-check + vite build
-npm run format       # prettier --write src/
+npm run test:unit    # vitest (jsdom environment)
+npm run test:e2e     # playwright test (first run: npx playwright install)
+npm run lint         # oxlint then eslint (sequential via npm-run-all2)
+npm run build        # type-check + vite build (parallel via npm-run-all2)
+npm run format       # prettier --write --experimental-cli src/
 ```
+- **Auto-imports**: Vue/Router APIs and Element Plus components are auto-registered — no manual imports needed in SFCs.
+- **Element Plus theming**: Uses Sass (`importStyle: 'sass'`). Custom vars in `src/styles/_variables.scss`, overrides in `src/styles/element/`.
+- **Prettier**: `semi: false`, `singleQuote: true`, `printWidth: 100`
 
 ## Architecture notes
 - **Layer flow**: `api/` (routes) → `services/` (business logic) → `repositories/` (DB queries) → `models/` (SQLAlchemy ORM)

@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite+aiosqlite:///./novel_agent.db"
     SECRET_KEY: str = "change-this-to-a-random-secret-key"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+    DEEPSEEK_API_KEY: str = ""
 
     @property
     def is_prod(self) -> bool:
