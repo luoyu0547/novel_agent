@@ -14,7 +14,7 @@ export default defineConfig({
     vueJsx(),
     vueDevTools(),
     AutoImport({
-      imports: ['vue', 'vue-router'],
+      imports: ['vue', 'vue-router', { 'element-plus': [['ElMessage', 'ElMessage'], ['ElMessageBox', 'ElMessageBox']] }],
       resolvers: [ElementPlusResolver({ importStyle: 'sass' })],
     }),
     Components({
