@@ -11,7 +11,7 @@ os.environ["SECRET_KEY"] = "test-secret-key"
 
 from app.core.database import Base, engine  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Chapter, Novel, User  # noqa: F401, E402
+from app.models import Chapter, CharacterProfile, Novel, User, WorldSetting  # noqa: F401, E402
 
 
 @pytest.fixture(autouse=True)

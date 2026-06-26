@@ -21,6 +21,8 @@ class Novel(Base):
 
     user = relationship("User", back_populates="novels")
     chapters = relationship("Chapter", back_populates="novel", order_by="Chapter.created_at")
+    characters = relationship("CharacterProfile", back_populates="novel", cascade="all, delete-orphan")
+    world_settings = relationship("WorldSetting", back_populates="novel", cascade="all, delete-orphan")
 
 
 class Chapter(Base):
