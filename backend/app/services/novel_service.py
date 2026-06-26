@@ -11,8 +11,8 @@ class NovelService:
         self.repo = NovelRepo(db)
         self.chapter_repo = ChapterRepo(db)
 
-    async def create(self, user_id: int, title: str, description: Optional[str] = None):
-        return await self.repo.create(user_id, title, description)
+    async def create(self, user_id: int, title: str, description: Optional[str] = None, genre: Optional[str] = None, style_guide: Optional[str] = None):
+        return await self.repo.create(user_id, title, description, genre, style_guide)
 
     async def list(self, user_id: int):
         return await self.repo.list_by_user(user_id)
@@ -23,13 +23,13 @@ class NovelService:
             raise NotFound("小说不存在")
         return novel
 
-    async def update(self, user_id: int, novel_id: int, title: Optional[str], description: Optional[str]):
+    async def update(self, user_id: int, novel_id: int, title: Optional[str], description: Optional[str], genre: Optional[str], style_guide: Optional[str]):
         novel = await self.repo.get_by_id(novel_id)
         if not novel:
             raise NotFound("小说不存在")
         if novel.user_id != user_id:
             raise Forbidden("无权修改该小说")
-        return await self.repo.update(novel, title, description)
+        return await self.repo.update(novel, title, description, genre, style_guide)
 
     async def delete(self, user_id: int, novel_id: int):
         novel = await self.repo.get_by_id(novel_id)
@@ -39,13 +39,13 @@ class NovelService:
             raise Forbidden("无权删除该小说")
         await self.repo.delete(novel)
 
-    async def create_chapter(self, user_id: int, novel_id: int, title: str, content: str = ""):
+    async def create_chapter(self, user_id: int, novel_id: int, title: str, content: str = "", summary: str = "", status: str = "draft"):
         novel = await self.repo.get_by_id(novel_id)
         if not novel:
             raise NotFound("小说不存在")
         if novel.user_id != user_id:
             raise Forbidden("无权在该小说下创建章节")
-        return await self.chapter_repo.create(novel_id, title, content)
+        return await self.chapter_repo.create(novel_id, title, content, summary, status)
 
     async def get_chapter(self, novel_id: int, chapter_id: int, user_id: int):
         novel = await self.repo.get_by_id(novel_id)
@@ -56,7 +56,7 @@ class NovelService:
             raise NotFound("章节不存在")
         return chapter
 
-    async def update_chapter(self, user_id: int, novel_id: int, chapter_id: int, title: Optional[str], content: Optional[str]):
+    async def update_chapter(self, user_id: int, novel_id: int, chapter_id: int, title: Optional[str], content: Optional[str], summary: Optional[str], status: Optional[str]):
         novel = await self.repo.get_by_id(novel_id)
         if not novel:
             raise NotFound("小说不存在")
@@ -65,7 +65,7 @@ class NovelService:
         chapter = await self.chapter_repo.get_by_id(chapter_id)
         if not chapter or chapter.novel_id != novel_id:
             raise NotFound("章节不存在")
-        return await self.chapter_repo.update(chapter, title, content)
+        return await self.chapter_repo.update(chapter, title, content, summary, status)
 
     async def delete_chapter(self, user_id: int, novel_id: int, chapter_id: int):
         novel = await self.repo.get_by_id(novel_id)

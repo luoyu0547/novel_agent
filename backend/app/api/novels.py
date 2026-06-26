@@ -34,7 +34,7 @@ async def create_novel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    novel = await NovelService(db).create(current_user.id, body.title, body.description)
+    novel = await NovelService(db).create(current_user.id, body.title, body.description, body.genre, body.style_guide)
     return ApiResponse.success(data=NovelListItem.model_validate(novel), message="小说创建成功")
 
 
@@ -55,7 +55,7 @@ async def update_novel(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    novel = await NovelService(db).update(current_user.id, novel_id, body.title, body.description)
+    novel = await NovelService(db).update(current_user.id, novel_id, body.title, body.description, body.genre, body.style_guide)
     return ApiResponse.success(data=NovelOut.model_validate(novel), message="小说更新成功")
 
 
@@ -76,7 +76,7 @@ async def create_chapter(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    chapter = await NovelService(db).create_chapter(current_user.id, novel_id, body.title, body.content)
+    chapter = await NovelService(db).create_chapter(current_user.id, novel_id, body.title, body.content, body.summary, body.status)
     return ApiResponse.success(data=ChapterOut.model_validate(chapter), message="章节创建成功")
 
 
@@ -99,7 +99,7 @@ async def update_chapter(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    chapter = await NovelService(db).update_chapter(current_user.id, novel_id, chapter_id, body.title, body.content)
+    chapter = await NovelService(db).update_chapter(current_user.id, novel_id, chapter_id, body.title, body.content, body.summary, body.status)
     return ApiResponse.success(data=ChapterOut.model_validate(chapter), message="章节保存成功")
 
 

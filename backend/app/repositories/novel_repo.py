@@ -11,8 +11,8 @@ class NovelRepo:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def create(self, user_id: int, title: str, description: Optional[str] = None) -> Novel:
-        novel = Novel(user_id=user_id, title=title, description=description)
+    async def create(self, user_id: int, title: str, description: Optional[str] = None, genre: Optional[str] = None, style_guide: Optional[str] = None) -> Novel:
+        novel = Novel(user_id=user_id, title=title, description=description, genre=genre, style_guide=style_guide)
         self.db.add(novel)
         await self.db.commit()
         await self.db.refresh(novel)
@@ -30,11 +30,15 @@ class NovelRepo:
         )
         return result.scalar_one_or_none()
 
-    async def update(self, novel: Novel, title: Optional[str], description: Optional[str]) -> Novel:
+    async def update(self, novel: Novel, title: Optional[str], description: Optional[str], genre: Optional[str], style_guide: Optional[str]) -> Novel:
         if title is not None:
             novel.title = title
         if description is not None:
             novel.description = description
+        if genre is not None:
+            novel.genre = genre
+        if style_guide is not None:
+            novel.style_guide = style_guide
         await self.db.commit()
         await self.db.refresh(novel)
         return novel
@@ -48,8 +52,8 @@ class ChapterRepo:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def create(self, novel_id: int, title: str, content: str = "") -> Chapter:
-        chapter = Chapter(novel_id=novel_id, title=title, content=content)
+    async def create(self, novel_id: int, title: str, content: str = "", summary: str = "", status: str = "draft") -> Chapter:
+        chapter = Chapter(novel_id=novel_id, title=title, content=content, summary=summary, status=status)
         self.db.add(chapter)
         await self.db.commit()
         await self.db.refresh(chapter)
@@ -58,11 +62,15 @@ class ChapterRepo:
     async def get_by_id(self, chapter_id: int) -> Optional[Chapter]:
         return await self.db.get(Chapter, chapter_id)
 
-    async def update(self, chapter: Chapter, title: Optional[str], content: Optional[str]) -> Chapter:
+    async def update(self, chapter: Chapter, title: Optional[str], content: Optional[str], summary: Optional[str], status: Optional[str]) -> Chapter:
         if title is not None:
             chapter.title = title
         if content is not None:
             chapter.content = content
+        if summary is not None:
+            chapter.summary = summary
+        if status is not None:
+            chapter.status = status
         await self.db.commit()
         await self.db.refresh(chapter)
         return chapter
