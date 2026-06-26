@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import type { ChapterStatus } from '@/types'
 import { CHAPTER_STATUS_OPTIONS } from '@/constants/options'
+
+const router = useRouter()
+const route = useRoute()
 
 const props = defineProps<{
   title: string
@@ -33,13 +37,14 @@ function onManualSave() {
 }
 
 const focused = ref(false)
+defineExpose({ wordCount })
 </script>
 
 <template>
   <div class="writing-editor">
     <header class="writing-editor__header">
-      <el-button text @click="$router.back()">← 返回</el-button>
-      <span class="writing-editor__novel-name">{{ $route.params.id }}</span>
+      <el-button text @click="router.back()">← 返回</el-button>
+      <span class="writing-editor__novel-name">{{ route.params.id }}</span>
       <div class="writing-editor__actions">
         <el-select :model-value="status" size="small" @update:model-value="emit('update:status', $event)">
           <el-option
@@ -84,7 +89,6 @@ const focused = ref(false)
   &__actions { display: flex; align-items: center; gap: $spacing-sm; }
   &__body { max-width: 760px; width: 100%; margin: 0 auto; padding: $spacing-xl $spacing-lg; flex: 1; display: flex; flex-direction: column; gap: $spacing-lg;
     &--focused {
-      .writing-editor__summary { display: none; }
       .writing-editor__header { opacity: 0.15; transition: opacity 0.3s; &:hover { opacity: 1; } }
     }
   }
@@ -97,7 +101,5 @@ const focused = ref(false)
       &:focus { box-shadow: none; }
     }
   }
-  &__summary { border-top: 1px solid $color-border; padding-top: $spacing-lg; }
-  &__summary-title { font-size: $font-size-md; font-weight: 600; margin-bottom: $spacing-sm; }
 }
 </style>

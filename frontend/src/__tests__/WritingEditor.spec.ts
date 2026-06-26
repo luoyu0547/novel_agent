@@ -3,6 +3,11 @@ import { mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import WritingEditor from '@/components/editor/WritingEditor.vue'
 
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ back: vi.fn() }),
+  useRoute: () => ({ params: { id: '1' } }),
+}))
+
 const globalStubs = {
   ElInput: true,
   ElInputNumber: true,
@@ -13,16 +18,11 @@ const globalStubs = {
   ElDivider: true,
 }
 
-const routerMock = {
-  $route: { params: { id: '1' } },
-  $router: { back: vi.fn() },
-}
-
 describe('WritingEditor', () => {
   it('renders title and content props', () => {
     const wrapper = mount(WritingEditor, {
       props: { title: '第一章', content: '正文内容', status: 'draft', saving: false, savedAt: null },
-      global: { plugins: [createPinia()], stubs: globalStubs, mocks: routerMock },
+      global: { plugins: [createPinia()], stubs: globalStubs },
     })
     expect(wrapper.findComponent({ name: 'ElInput' })).toBeTruthy()
   })
@@ -30,7 +30,7 @@ describe('WritingEditor', () => {
   it('emits update:title when title input changes', async () => {
     const wrapper = mount(WritingEditor, {
       props: { title: '第一章', content: '', status: 'draft', saving: false, savedAt: null },
-      global: { plugins: [createPinia()], stubs: globalStubs, mocks: routerMock },
+      global: { plugins: [createPinia()], stubs: globalStubs },
     })
     const titleInput = wrapper.findAllComponents({ name: 'ElInput' })[0]
     titleInput?.vm.$emit('update:modelValue', '第二章')
@@ -41,7 +41,7 @@ describe('WritingEditor', () => {
   it('emits update:content when content changes', async () => {
     const wrapper = mount(WritingEditor, {
       props: { title: '', content: '旧内容', status: 'draft', saving: false, savedAt: null },
-      global: { plugins: [createPinia()], stubs: globalStubs, mocks: routerMock },
+      global: { plugins: [createPinia()], stubs: globalStubs },
     })
     const contentTextarea = wrapper.findAllComponents({ name: 'ElInput' })[1]
     contentTextarea?.vm.$emit('update:modelValue', '新内容')
@@ -52,7 +52,7 @@ describe('WritingEditor', () => {
     vi.useFakeTimers()
     const wrapper = mount(WritingEditor, {
       props: { title: '', content: '内容', status: 'draft', saving: false, savedAt: null },
-      global: { plugins: [createPinia()], stubs: globalStubs, mocks: routerMock },
+      global: { plugins: [createPinia()], stubs: globalStubs },
     })
     const contentTextarea = wrapper.findAllComponents({ name: 'ElInput' })[1]
     contentTextarea?.vm.$emit('update:modelValue', '新内容')
@@ -64,7 +64,7 @@ describe('WritingEditor', () => {
   it('displays word count', () => {
     const wrapper = mount(WritingEditor, {
       props: { title: '', content: 'HelloWorld', status: 'draft', saving: false, savedAt: null },
-      global: { plugins: [createPinia()], stubs: globalStubs, mocks: routerMock },
+      global: { plugins: [createPinia()], stubs: globalStubs },
     })
     expect(wrapper.text()).toContain('10')
   })
