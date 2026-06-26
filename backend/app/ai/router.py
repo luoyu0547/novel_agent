@@ -94,11 +94,12 @@ async def batch_pending_memories(
 ):
     await NovelService(db).get(novel_id, current_user.id)
     repo = PendingMemoryRepo(db)
-    for mid in body.ids:
-        memory = await repo.get(mid)
-        if memory and memory.novel_id == novel_id:
-            if body.action == "confirm":
-                await repo.confirm(memory)
-            elif body.action == "reject":
-                await repo.reject(memory)
+    memories = await repo.get_many(body.ids)
+    for memory in memories:
+        if memory.novel_id != novel_id:
+            continue
+        if body.action == "confirm":
+            await repo.confirm(memory)
+        elif body.action == "reject":
+            await repo.reject(memory)
     return ApiResponse.success(message=f"批量{body.action}完成")

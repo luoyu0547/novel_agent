@@ -1,3 +1,5 @@
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -5,6 +7,8 @@ from app.models.foreshadowing import Foreshadowing
 from app.models.memory import CharacterProfile, WorldSetting
 from app.models.pending_memory import PendingMemory
 from app.models.plot_fact import PlotFact
+
+logger = logging.getLogger("novel_agent.memory")
 
 
 class PendingMemoryRepo:
@@ -23,6 +27,11 @@ class PendingMemoryRepo:
     async def get(self, memory_id: int) -> PendingMemory | None:
         return await self.db.get(PendingMemory, memory_id)
 
+    async def get_many(self, memory_ids: list[int]) -> list[PendingMemory]:
+        stmt = select(PendingMemory).where(PendingMemory.id.in_(memory_ids))
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
     async def create(self, novel_id: int, chapter_id: int, memory_type: str, content: dict) -> PendingMemory:
         pm = PendingMemory(
             novel_id=novel_id,
@@ -40,20 +49,31 @@ class PendingMemoryRepo:
         data_list = memory.content.get("data", [])
         if memory.memory_type == "character_change":
             for change in data_list:
+                name = change.get("name")
+                if not name:
+                    logger.warning("Skipping character_change with missing name: %s", change)
+                    continue
                 stmt = select(CharacterProfile).where(
                     CharacterProfile.novel_id == memory.novel_id,
-                    CharacterProfile.name == change["name"],
+                    CharacterProfile.name == name,
                 )
                 result = await self.db.execute(stmt)
                 char = result.scalar_one_or_none()
-                if char and (field := change.get("field")):
-                    if hasattr(char, field):
-                        setattr(char, field, change["change_description"])
+                if not char:
+                    logger.warning("Character not found for change: %s", name)
+                    continue
+                field = change.get("field")
+                if field and hasattr(char, field):
+                    setattr(char, field, change.get("change_description", ""))
         elif memory.memory_type == "world_setting":
             for s in data_list:
+                title = s.get("title")
+                if not title:
+                    logger.warning("Skipping world_setting with missing title: %s", s)
+                    continue
                 ws = WorldSetting(
                     novel_id=memory.novel_id,
-                    title=s["title"],
+                    title=title,
                     category=s.get("category", "other"),
                     content=s.get("content", ""),
                 )
@@ -71,9 +91,13 @@ class PendingMemoryRepo:
                 self.db.add(pf)
         elif memory.memory_type == "foreshadowing":
             for c in data_list:
+                name = c.get("name")
+                if not name:
+                    logger.warning("Skipping foreshadowing with missing name: %s", c)
+                    continue
                 fs = Foreshadowing(
                     novel_id=memory.novel_id,
-                    name=c["name"],
+                    name=name,
                     planted_chapter_id=memory.chapter_id,
                     description=c.get("description", ""),
                     hidden_truth=c.get("hint", ""),

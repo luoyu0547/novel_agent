@@ -1,4 +1,5 @@
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
 from langchain.agents import AgentState, create_agent
 from langchain.chat_models import init_chat_model
@@ -14,6 +15,7 @@ def create_novel_agent(
     system_prompt: str = "",
     state_schema: type[AgentState] | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    middleware: list[Callable[..., Any]] | None = None,
 ):
     model_name = FLASH_MODEL if model_type == "flash" else PRO_MODEL
     model = init_chat_model(model_name, model_provider="deepseek")
@@ -23,6 +25,7 @@ def create_novel_agent(
         system_prompt=system_prompt,
         state_schema=state_schema,
         checkpointer=checkpointer,
+        middleware=middleware,
     )
 
 
@@ -31,6 +34,7 @@ def create_novel_deep_agent(
     system_prompt: str = "",
     state_schema: type[AgentState] | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
+    middleware: list[Callable[..., Any]] | None = None,
 ):
     model = init_chat_model(PRO_MODEL, model_provider="deepseek")
     try:
@@ -43,4 +47,5 @@ def create_novel_deep_agent(
         system_prompt=system_prompt,
         state_schema=state_schema,
         checkpointer=checkpointer,
+        middleware=middleware,
     )

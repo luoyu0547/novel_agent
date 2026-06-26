@@ -4,6 +4,8 @@ from pydantic import BaseModel
 
 
 class PendingMemoryOut(BaseModel):
+    model_config = {"from_attributes": True}
+
     id: int
     novel_id: int
     chapter_id: int

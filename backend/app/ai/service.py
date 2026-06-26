@@ -4,6 +4,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from app.ai.agent import create_novel_agent, create_novel_deep_agent
 from app.ai.models import NovelAgentState
+from app.ai.middleware.logging import logging_middleware
 from app.ai.tools.context import get_chapter_context
 from app.ai.tools.memory import (
     save_character_changes,
@@ -41,18 +42,16 @@ DEEP_PROMPT = STANDARD_PROMPT + """
 - 标记可能被忽略的细节（可能发展为后续情节）
 - 对角色行为的合理性给出判断"""
 
+TOOLS = [
+    get_chapter_context,
+    save_character_changes,
+    save_plot_facts,
+    save_world_settings,
+    save_foreshadowing_candidates,
+]
+
 
 class NovelExtractionService:
-    def __init__(self):
-        self.tools = [
-            get_chapter_context,
-            save_character_changes,
-            save_plot_facts,
-            save_world_settings,
-            save_foreshadowing_candidates,
-        ]
-        self.checkpointer = InMemorySaver()
-
     async def extract(self, novel_id: int, chapter_id: int, user_id: int, mode: str = "standard") -> dict:
         state = NovelAgentState(
             novel_id=novel_id,
@@ -60,33 +59,42 @@ class NovelExtractionService:
             user_id=user_id,
         )
 
+        checkpointer = InMemorySaver()
+        middleware = [logging_middleware]
+
         if mode == "deep":
             agent = create_novel_deep_agent(
-                tools=self.tools,
+                tools=TOOLS,
                 system_prompt=DEEP_PROMPT,
                 state_schema=NovelAgentState,
-                checkpointer=self.checkpointer,
+                checkpointer=checkpointer,
+                middleware=middleware,
             )
         else:
             agent = create_novel_agent(
                 model_type="flash",
-                tools=self.tools,
+                tools=TOOLS,
                 system_prompt=STANDARD_PROMPT,
                 state_schema=NovelAgentState,
-                checkpointer=self.checkpointer,
+                checkpointer=checkpointer,
+                middleware=middleware,
             )
 
-        result = await agent.ainvoke(
-            {
-                "messages": [
-                    {"role": "user", "content": f"请分析 novel_id={novel_id} 的第 {chapter_id} 章，提取所有结构化信息。"}
-                ],
-                "novel_id": novel_id,
-                "chapter_id": chapter_id,
-                "user_id": user_id,
-            },
-            config={"configurable": {"thread_id": f"extract-{novel_id}-{chapter_id}"}},
-        )
+        try:
+            result = await agent.ainvoke(
+                {
+                    "messages": [
+                        {"role": "user", "content": f"请分析 novel_id={novel_id} 的第 {chapter_id} 章，提取所有结构化信息。"}
+                    ],
+                    "novel_id": novel_id,
+                    "chapter_id": chapter_id,
+                    "user_id": user_id,
+                },
+                config={"configurable": {"thread_id": f"extract-{novel_id}-{chapter_id}"}},
+            )
+        except Exception as e:
+            logger.error("Agent invocation failed: novel_id=%s chapter_id=%s error=%s", novel_id, chapter_id, str(e))
+            return {"chapter_summary": None, "pending_ids": [], "pending_count": 0, "error": str(e)}
 
         final_state = result.get("state", state)
 
