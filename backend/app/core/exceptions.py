@@ -1,3 +1,10 @@
+"""应用自定义异常层次结构。
+
+每个异常携带一个数字错误码 ``code``（用于 API 响应）、``message`` 和
+HTTP ``status_code``。错误码约定：HTTP 状态码后跟两位序号（如 40400 表示第一个 404 错误）。
+"""
+
+
 class AppException(Exception):
     def __init__(self, code: int, message: str, status_code: int = 400):
         self.code = code

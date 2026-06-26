@@ -8,6 +8,7 @@ from app.core.database import Base
 
 
 class Novel(Base):
+    """小说主模型，属于某个用户。级联删除关联的章节、角色和世界观设定。"""
     __tablename__ = "novels"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -26,6 +27,7 @@ class Novel(Base):
 
 
 class Chapter(Base):
+    """章节模型。status 可选值: draft（草稿）, reviewed（已审阅）, locked（已锁定）。"""
     __tablename__ = "chapters"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

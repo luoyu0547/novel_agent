@@ -18,7 +18,7 @@ function handleLogout() { auth.logout(); router.push('/login') }
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
 .app-header { display: flex; align-items: center; justify-content: space-between; height: 56px; padding: 0 $spacing-lg; background: $color-bg-card; border-bottom: 1px solid $color-border;
-  &__logo { font-family: $font-family; font-size: $font-size-lg; font-weight: 700; color: $color-primary-dark; }
+  &__logo { font-family: $font-family-serif; font-size: $font-size-lg; font-weight: 700; color: $color-primary-dark; }
   &__right { display: flex; align-items: center; gap: $spacing-md; }
   &__user { font-size: $font-size-sm; color: $color-text-secondary; } }
 </style>

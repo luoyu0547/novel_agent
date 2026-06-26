@@ -1,3 +1,7 @@
+"""小说和章节的 Pydantic 请求/响应模式。
+
+ChapterStatus 字面量约束了章节状态的可选值: draft(草稿), reviewed(已审阅), locked(已锁定)。
+"""
 import datetime
 from typing import List, Literal, Optional
 

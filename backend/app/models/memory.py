@@ -7,6 +7,7 @@ from app.core.database import Base
 
 
 class CharacterProfile(Base):
+    """角色资料模型。behavior_rules 以 JSON 列表存储，记录角色的行为准则。"""
     __tablename__ = "character_profiles"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -26,6 +27,7 @@ class CharacterProfile(Base):
 
 
 class WorldSetting(Base):
+    """世界观设定模型。category 可选值见 memory.py 中的 WorldSettingCategory 字面量。"""
     __tablename__ = "world_settings"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

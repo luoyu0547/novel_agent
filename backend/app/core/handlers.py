@@ -1,3 +1,8 @@
+"""FastAPI 应用异常处理器注册。
+
+将 ``AppException`` 子类映射到对应的 HTTP 状态码和错误负载。
+捕获所有未处理的 ``Exception`` 作为通用 500 错误。
+"""
 import logging
 
 from fastapi import FastAPI, Request

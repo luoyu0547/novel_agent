@@ -1,3 +1,4 @@
+"""角色资料和世界观设定的业务逻辑。通过 ensure_owned_novel 守卫所有权。"""
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFound
@@ -13,6 +14,7 @@ class MemoryService:
         self.setting_repo = WorldSettingRepo(db)
 
     async def ensure_owned_novel(self, user_id: int, novel_id: int):
+        """验证小说存在且属于当前用户。所有权不匹配时也返回 NotFound（避免泄露小说是否存在）。"""
         novel = await self.novel_repo.get_by_id(novel_id)
         if not novel:
             raise NotFound("小说不存在")

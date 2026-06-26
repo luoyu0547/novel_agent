@@ -1,3 +1,8 @@
+"""角色和世界观的 Pydantic 请求/响应模式。
+
+WorldSettingCategory 约束了世界观分类: geography(地理), faction(势力), rule(规则),
+history(历史), culture(文化), other(其他)。
+"""
 import datetime
 from typing import Literal, Optional
 

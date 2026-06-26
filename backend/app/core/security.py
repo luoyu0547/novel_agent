@@ -1,3 +1,8 @@
+"""认证与授权工具。
+
+使用 bcrypt（通过 passlib）进行密码哈希，使用 HS256 JWT 生成 token。
+``get_current_user`` 是认证守卫：解码 Bearer token 并查询用户。
+"""
 import datetime
 import logging
 
@@ -27,6 +32,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_token(data: dict) -> str:
+    """签发 JWT，将 data 中的字段（如 user_id）编码进 payload，自动添加过期时间。"""
     payload = data.copy()
     payload["exp"] = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
         minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
@@ -47,6 +53,7 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
+    """认证守卫：解码 Bearer token，提取 user_id 并查询用户。用户不存在或 token 无效时抛出 Unauthorized。"""
     payload = decode_token(credentials.credentials)
     user_id = payload.get("user_id")
     if not user_id:

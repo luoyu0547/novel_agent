@@ -1,3 +1,4 @@
+"""认证业务逻辑：注册时检查用户名唯一性，登录时验证密码并签发 JWT。"""
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import BadRequest, Unauthorized

@@ -1,3 +1,8 @@
+"""FastAPI 应用入口。
+
+通过 ``create_app()`` 创建应用，注册 CORS、路由和异常处理器。
+``startup`` 事件自动创建所有表；``shutdown`` 事件释放引擎。
+"""
 import logging
 
 import uvicorn

@@ -1,3 +1,4 @@
+"""小说和章节的业务逻辑。所有操作通过 user_id 所有权守卫确保数据隔离。"""
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +19,7 @@ class NovelService:
         return await self.repo.list_by_user(user_id)
 
     async def get(self, novel_id: int, user_id: int):
+        """获取小说。找不到或不属于当前用户时均抛出 NotFound（避免泄露小说是否存在）。"""
         novel = await self.repo.get_by_id(novel_id)
         if not novel or novel.user_id != user_id:
             raise NotFound("小说不存在")

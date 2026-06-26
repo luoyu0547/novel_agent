@@ -36,7 +36,7 @@ async function handleLogin() {
 @use '@/styles/variables' as *;
 .auth-view { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: $color-bg; }
 .auth-card { width: 100%; max-width: 400px; padding: $spacing-2xl; background: $color-bg-card; border-radius: $radius-xl; box-shadow: $shadow-md; border: 1px solid $color-border; }
-.auth-card__title { font-family: $font-family; font-size: $font-size-2xl; text-align: center; color: $color-primary-dark; margin-bottom: $spacing-xs; }
+.auth-card__title { font-family: $font-family-serif; font-size: $font-size-2xl; text-align: center; color: $color-primary-dark; margin-bottom: $spacing-xs; }
 .auth-card__subtitle { text-align: center; color: $color-text-secondary; margin-bottom: $spacing-xl; font-size: $font-size-sm; }
 .auth-card__form { display: flex; flex-direction: column; gap: $spacing-md; }
 .auth-card__error { font-size: $font-size-sm; color: $color-error; }

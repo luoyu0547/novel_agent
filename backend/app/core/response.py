@@ -1,3 +1,8 @@
+"""统一 API 响应格式。
+
+成功时所有端点返回 ``{"code": 0, "message": "ok", "data": ...}``。
+失败时 ``code`` 非零，``data`` 为 None。
+"""
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
