@@ -96,6 +96,10 @@ async def test_extract_chapter_deep(client: AsyncClient, auth_headers: dict, nov
     assert resp.status_code == 200
     data = resp.json()
     assert data["code"] == 0
+    extract = data["data"]
+    assert "pending_ids" in extract
+    assert "pending_count" in extract
+    assert extract["pending_count"] == len(extract["pending_ids"])
 
 
 @pytest.mark.asyncio
