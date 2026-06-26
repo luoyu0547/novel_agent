@@ -10,7 +10,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import User, Novel, Chapter, CharacterProfile, WorldSetting  # noqa: F401 — register models on Base
+from app.models import PendingMemory, PlotFact, Foreshadowing  # noqa: F401 — register models on Base
 from app.api import auth, memory, novels
+from app.ai import router as ai_router
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.core.handlers import register_exception_handlers
@@ -35,6 +37,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router, prefix="/api/v1")
     app.include_router(novels.router, prefix="/api/v1")
     app.include_router(memory.router, prefix="/api/v1")
+    app.include_router(ai_router.router, prefix="/api/v1")
 
     @app.on_event("startup")
     async def startup():
