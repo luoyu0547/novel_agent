@@ -3,7 +3,6 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novels'
 import NovelWorkspaceTabs from '@/components/novels/NovelWorkspaceTabs.vue'
-import { ElMessageBox } from 'element-plus'
 
 const route = useRoute(); const router = useRouter(); const novelStore = useNovelStore()
 const novelId = computed(() => Number(route.params.id))

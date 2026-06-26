@@ -3,8 +3,6 @@ import { ref, onMounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novels'
 
-import { ElMessageBox } from 'element-plus'
-
 const router = useRouter()
 const novelStore = useNovelStore()
 const showCreateModal = ref(false)

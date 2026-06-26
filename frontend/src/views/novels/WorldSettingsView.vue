@@ -14,10 +14,15 @@ const novelId = computed(() => Number(route.params.id))
 const showModal = ref(false)
 const editingId = ref<number | null>(null)
 const selectedCategory = ref<WorldSettingCategory | 'all'>('all')
+const formRef = ref()
 
 const form = ref<{ title: string; category: WorldSettingCategory; content: string }>({
   title: '', category: 'other', content: '',
 })
+
+const rules = {
+  title: [{ required: true, message: '请输入设定标题', trigger: 'blur' }],
+}
 
 const filteredSettings = computed(() =>
   selectedCategory.value === 'all'
@@ -41,10 +46,13 @@ function openEdit(setting: WorldSetting) {
 }
 
 async function handleSave() {
-  if (!form.value.title) return
-  if (editingId.value) await memoryStore.updateWorldSetting(novelId.value, editingId.value, form.value)
-  else await memoryStore.createWorldSetting(novelId.value, form.value)
-  showModal.value = false
+  if (!formRef.value) return
+  await formRef.value.validate(async (valid: boolean) => {
+    if (!valid) return
+    if (editingId.value) await memoryStore.updateWorldSetting(novelId.value, editingId.value, form.value)
+    else await memoryStore.createWorldSetting(novelId.value, form.value)
+    showModal.value = false
+  })
 }
 
 function confirmDelete(id: number) {
@@ -97,8 +105,8 @@ function categoryLabel(value: string) {
 
     <el-dialog v-model="showModal" :title="editingId ? '编辑设定' : '新建设定'" width="640px">
       <div class="settings__form">
-        <el-form label-position="top">
-          <el-form-item label="设定标题">
+        <el-form ref="formRef" :model="form" :rules="rules" label-position="top">
+          <el-form-item label="设定标题" prop="title">
             <el-input v-model="form.title" placeholder="设定标题" />
           </el-form-item>
           <el-form-item label="分类">

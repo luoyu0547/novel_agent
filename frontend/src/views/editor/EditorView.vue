@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { useNovelStore } from '@/stores/novels'
 import WritingEditor from '@/components/editor/WritingEditor.vue'
 import type { ChapterStatus } from '@/types'
 
-const route = useRoute(); const router = useRouter(); const novelStore = useNovelStore()
+const route = useRoute(); const novelStore = useNovelStore()
 const novelId = computed(() => Number(route.params.id))
 const chapterId = computed(() => Number(route.params.chapterId))
 const title = ref(''); const content = ref(''); const saving = ref(false); const savedAt = ref<string | null>(null)

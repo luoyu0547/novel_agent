@@ -4,7 +4,7 @@ import { createPinia } from 'pinia'
 import WritingEditor from '@/components/editor/WritingEditor.vue'
 
 vi.mock('vue-router', () => ({
-  useRouter: () => ({ back: vi.fn() }),
+  useRouter: () => ({ back: vi.fn<() => void>() }),
   useRoute: () => ({ params: { id: '1' } }),
 }))
 

@@ -24,15 +24,15 @@ const emit = defineEmits<{
 
 const wordCount = computed(() => props.content.length)
 
-let debounceTimer: ReturnType<typeof setTimeout> | null = null
+const debounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 function onContentInput(value: string) {
   emit('update:content', value)
-  if (debounceTimer) clearTimeout(debounceTimer)
-  debounceTimer = setTimeout(() => emit('save'), 3000)
+  if (debounceTimer.value) clearTimeout(debounceTimer.value)
+  debounceTimer.value = setTimeout(() => emit('save'), 3000)
 }
 
 function onManualSave() {
-  if (debounceTimer) clearTimeout(debounceTimer)
+  if (debounceTimer.value) clearTimeout(debounceTimer.value)
   emit('save')
 }
 

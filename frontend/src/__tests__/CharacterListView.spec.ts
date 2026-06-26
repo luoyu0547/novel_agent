@@ -7,7 +7,7 @@ import { useNovelStore } from '@/stores/novels'
 
 vi.mock('vue-router', () => ({
   useRoute: () => ({ params: { id: '1' } }),
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: vi.fn<() => void>() }),
 }))
 
 const globalStubs = {
