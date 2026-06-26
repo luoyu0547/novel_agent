@@ -45,13 +45,13 @@ async function handleUpdateNovel() {
   showNovelModal.value = false
 }
 
-onMounted(async () => { await novelStore.getNovel(novelId.value); if (chapters.value.length > 0) selectedChapterId.value = chapters.value[0].id })
+onMounted(async () => { await novelStore.getNovel(novelId.value); if (chapters.value.length > 0) selectedChapterId.value = chapters.value[0]?.id ?? null })
 
 async function handleCreateChapter() {
   if (!newChapterTitle.value) return
   await novelStore.createChapter(novelId.value, { title: newChapterTitle.value })
   showChapterModal.value = false; newChapterTitle.value = ''
-  const chs = novelStore.currentNovel?.chapters || []; if (chs.length > 0) selectedChapterId.value = chs[chs.length - 1].id
+  const chs = novelStore.currentNovel?.chapters || []; if (chs.length > 0) selectedChapterId.value = chs[chs.length - 1]?.id ?? null
 }
 async function handleDeleteChapter() {
   if (deleteTarget.value) { await novelStore.deleteChapter(novelId.value, deleteTarget.value); deleteTarget.value = null }

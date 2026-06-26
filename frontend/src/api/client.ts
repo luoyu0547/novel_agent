@@ -18,7 +18,7 @@ client.interceptors.response.use(
     if (apiResponse.code !== 0) {
       return Promise.reject(new Error(apiResponse.message))
     }
-    return apiResponse.data as unknown
+    return apiResponse.data as any
   },
   (error) => {
     if (error.response?.status === 401) {
