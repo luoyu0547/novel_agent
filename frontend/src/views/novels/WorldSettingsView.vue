@@ -1,16 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import AppButton from '@/components/common/AppButton.vue'
-import AppCard from '@/components/common/AppCard.vue'
-import AppConfirm from '@/components/common/AppConfirm.vue'
-import AppEmpty from '@/components/common/AppEmpty.vue'
-import AppInput from '@/components/common/AppInput.vue'
-import AppModal from '@/components/common/AppModal.vue'
-import AppTextarea from '@/components/common/AppTextarea.vue'
-import NovelWorkspaceTabs from '@/components/novels/NovelWorkspaceTabs.vue'
-import { useMemoryStore } from '@/stores/memory'
 import { useNovelStore } from '@/stores/novels'
+import { useMemoryStore } from '@/stores/memory'
+import NovelWorkspaceTabs from '@/components/novels/NovelWorkspaceTabs.vue'
+import { WORLD_SETTING_CATEGORY_OPTIONS, WORLD_SETTING_CATEGORIES } from '@/constants/options'
 import type { WorldSetting, WorldSettingCategory } from '@/types'
 
 const route = useRoute()
@@ -19,37 +13,25 @@ const memoryStore = useMemoryStore()
 const novelId = computed(() => Number(route.params.id))
 const showModal = ref(false)
 const editingId = ref<number | null>(null)
-const deleteTarget = ref<number | null>(null)
 const selectedCategory = ref<WorldSettingCategory | 'all'>('all')
-const form = ref<{ title: string; category: WorldSettingCategory; content: string }>({ title: '', category: 'other', content: '' })
 
-const categories: { value: WorldSettingCategory | 'all'; label: string }[] = [
-  { value: 'all', label: '全部' },
-  { value: 'geography', label: '地理' },
-  { value: 'faction', label: '势力' },
-  { value: 'rule', label: '规则' },
-  { value: 'history', label: '历史' },
-  { value: 'culture', label: '文化' },
-  { value: 'other', label: '其他' },
-]
+const form = ref<{ title: string; category: WorldSettingCategory; content: string }>({
+  title: '', category: 'other', content: '',
+})
 
-const filteredSettings = computed(() => selectedCategory.value === 'all'
-  ? memoryStore.worldSettings
-  : memoryStore.worldSettings.filter((item) => item.category === selectedCategory.value))
+const filteredSettings = computed(() =>
+  selectedCategory.value === 'all'
+    ? memoryStore.worldSettings
+    : memoryStore.worldSettings.filter((item) => item.category === selectedCategory.value),
+)
 
 onMounted(async () => {
   await novelStore.getNovel(novelId.value)
   await memoryStore.loadWorldSettings(novelId.value)
 })
 
-function categoryLabel(category: string) {
-  return categories.find((item) => item.value === category)?.label || category
-}
-
 function openCreate() {
-  editingId.value = null
-  form.value = { title: '', category: 'other', content: '' }
-  showModal.value = true
+  editingId.value = null; form.value = { title: '', category: 'other', content: '' }; showModal.value = true
 }
 
 function openEdit(setting: WorldSetting) {
@@ -65,81 +47,93 @@ async function handleSave() {
   showModal.value = false
 }
 
-async function handleDelete() {
-  if (deleteTarget.value === null) return
-  await memoryStore.deleteWorldSetting(novelId.value, deleteTarget.value)
-  deleteTarget.value = null
+function confirmDelete(id: number) {
+  ElMessageBox.confirm('确定要删除这条世界观设定吗？', '删除设定', {
+    confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
+  }).then(() => memoryStore.deleteWorldSetting(novelId.value, id)).catch(() => {})
+}
+
+function categoryLabel(value: string) {
+  return WORLD_SETTING_CATEGORIES.find((c) => c.value === value)?.label || value
 }
 </script>
-
 <template>
-    <div class="settings">
-      <NovelWorkspaceTabs :novel-id="novelId" />
-      <div class="settings__header">
-        <div>
-          <h2 class="settings__title">世界观设定</h2>
-          <p class="settings__subtitle">{{ novelStore.currentNovel?.title }}</p>
-        </div>
-        <AppButton size="sm" @click="openCreate">新建设定</AppButton>
+  <div class="settings">
+    <NovelWorkspaceTabs :novel-id="novelId" />
+    <div class="settings__header">
+      <div>
+        <h2 class="settings__title">世界观设定</h2>
+        <el-text size="small" type="info">{{ novelStore.currentNovel?.title }}</el-text>
       </div>
+      <el-button size="small" type="primary" @click="openCreate">新建设定</el-button>
+    </div>
 
-      <div class="settings__filters">
-        <button v-for="category in categories" :key="category.value" class="settings__filter" :class="{ 'settings__filter--active': selectedCategory === category.value }" @click="selectedCategory = category.value">
-          {{ category.label }}
-        </button>
-      </div>
+    <el-radio-group v-model="selectedCategory" class="settings__filters">
+      <el-radio-button
+        v-for="option in WORLD_SETTING_CATEGORY_OPTIONS"
+        :key="option.value"
+        :value="option.value"
+      >{{ option.label }}</el-radio-button>
+    </el-radio-group>
 
-      <AppEmpty v-if="filteredSettings.length === 0" text="暂无世界观设定" />
-      <div v-else class="settings__grid">
-        <AppCard v-for="setting in filteredSettings" :key="setting.id" class="setting-card">
+    <el-empty v-if="filteredSettings.length === 0" description="暂无世界观设定" />
+    <el-row v-else :gutter="16">
+      <el-col v-for="setting in filteredSettings" :key="setting.id" :xs="24" :sm="12" :md="8">
+        <el-card shadow="hover" class="setting-card">
           <div class="setting-card__header">
             <div>
               <h3>{{ setting.title }}</h3>
-              <span>{{ categoryLabel(setting.category) }}</span>
+              <el-tag size="small" class="setting-card__tag">{{ categoryLabel(setting.category) }}</el-tag>
             </div>
             <div class="setting-card__actions">
-              <button @click="openEdit(setting)">编辑</button>
-              <button @click="deleteTarget = setting.id">删除</button>
+              <el-button text size="small" @click="openEdit(setting)">编辑</el-button>
+              <el-button text size="small" type="danger" @click="confirmDelete(setting.id)">删除</el-button>
             </div>
           </div>
-          <p>{{ setting.content }}</p>
-        </AppCard>
+          <el-text class="setting-card__content">{{ setting.content }}</el-text>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-dialog v-model="showModal" :title="editingId ? '编辑设定' : '新建设定'" width="640px">
+      <div class="settings__form">
+        <el-form label-position="top">
+          <el-form-item label="设定标题">
+            <el-input v-model="form.title" placeholder="设定标题" />
+          </el-form-item>
+          <el-form-item label="分类">
+            <el-select v-model="form.category" class="settings__select">
+              <el-option
+                v-for="option in WORLD_SETTING_CATEGORIES"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="设定内容">
+            <el-input v-model="form.content" type="textarea" :autosize="{ minRows: 8 }" placeholder="设定内容" />
+          </el-form-item>
+        </el-form>
       </div>
-
-      <AppModal v-model:visible="showModal" :title="editingId ? '编辑设定' : '新建设定'" confirm-text="保存" cancel-text="取消" width="640px" @confirm="handleSave" @cancel="showModal = false">
-        <div class="settings__form">
-          <AppInput v-model="form.title" placeholder="设定标题" />
-          <select v-model="form.category" class="settings__select">
-            <option value="geography">地理</option>
-            <option value="faction">势力</option>
-            <option value="rule">规则</option>
-            <option value="history">历史</option>
-            <option value="culture">文化</option>
-            <option value="other">其他</option>
-          </select>
-          <AppTextarea v-model="form.content" placeholder="设定内容" :rows="8" />
-        </div>
-      </AppModal>
-
-      <AppConfirm :visible="deleteTarget !== null" title="删除设定" content="确定要删除这条世界观设定吗？" confirm-text="删除" confirm-variant="danger" @update:visible="deleteTarget = null" @confirm="handleDelete" @cancel="deleteTarget = null" />
-    </div>
+      <template #footer>
+        <el-button @click="showModal = false">取消</el-button>
+        <el-button type="primary" @click="handleSave">保存</el-button>
+      </template>
+    </el-dialog>
+  </div>
 </template>
-
 <style scoped lang="scss">
 @use '@/styles/variables' as *;
 .settings { max-width: 1100px; margin: 0 auto; }
 .settings__header { display: flex; justify-content: space-between; align-items: center; margin-bottom: $spacing-lg; }
 .settings__title { font-size: $font-size-xl; font-weight: 700; }
-.settings__subtitle { margin-top: $spacing-xs; color: $color-text-secondary; font-size: $font-size-sm; }
-.settings__filters { display: flex; flex-wrap: wrap; gap: $spacing-sm; margin-bottom: $spacing-lg; }
-.settings__filter { padding: 4px 12px; border-radius: $radius-md; background: $color-bg-card; color: $color-text-secondary; border: 1px solid $color-border; }
-.settings__filter--active { background: $color-primary; color: #fff; border-color: $color-primary; }
-.settings__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: $spacing-md; }
+.settings__filters { margin-bottom: $spacing-lg; }
 .settings__form { display: flex; flex-direction: column; gap: $spacing-md; }
-.settings__select { border: 1px solid $color-border; border-radius: $radius-md; padding: 8px 16px; background: $color-bg-card; color: $color-text; }
-.setting-card { display: flex; flex-direction: column; gap: $spacing-sm; }
-.setting-card__header { display: flex; justify-content: space-between; gap: $spacing-md; }
-.setting-card__header span { display: inline-block; margin-top: 4px; color: $color-primary-dark; font-size: $font-size-xs; }
-.setting-card__actions { display: flex; gap: $spacing-sm; font-size: $font-size-sm; color: $color-primary-dark; }
-.setting-card p { font-size: $font-size-sm; line-height: 1.8; white-space: pre-wrap; color: $color-text-secondary; }
+.settings__select { width: 100%; }
+.setting-card { margin-bottom: $spacing-md; }
+.setting-card__header { display: flex; justify-content: space-between; gap: $spacing-md; margin-bottom: $spacing-sm; }
+.setting-card__tag { margin-top: 4px; }
+.setting-card__actions { display: flex; gap: 4px; flex-shrink: 0; }
+.setting-card__content { font-size: $font-size-sm; line-height: 1.8; white-space: pre-wrap; }
 </style>

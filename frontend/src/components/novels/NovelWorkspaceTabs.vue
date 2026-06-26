@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import type { TabPaneName } from 'element-plus'
 
 const props = defineProps<{ novelId: number }>()
 const route = useRoute()
@@ -14,7 +15,7 @@ const tabs = computed(() => [
 </script>
 
 <template>
-  <el-tabs :model-value="route.path" @tab-change="(p: string) => router.push(p)" class="workspace-tabs">
+  <el-tabs :model-value="route.path" @tab-change="(p: TabPaneName) => router.push(p as string)" class="workspace-tabs">
     <el-tab-pane v-for="tab in tabs" :key="tab.path" :label="tab.label" :name="tab.path" />
   </el-tabs>
 </template>
