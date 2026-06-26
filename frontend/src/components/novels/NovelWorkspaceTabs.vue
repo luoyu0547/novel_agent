@@ -14,17 +14,11 @@ const tabs = computed(() => [
 </script>
 
 <template>
-  <nav class="workspace-tabs">
-    <button v-for="tab in tabs" :key="tab.path" class="workspace-tabs__item" :class="{ 'workspace-tabs__item--active': route.path === tab.path }" @click="router.push(tab.path)">
-      {{ tab.label }}
-    </button>
-  </nav>
+  <el-tabs :model-value="route.path" @tab-change="(p: string) => router.push(p)" class="workspace-tabs">
+    <el-tab-pane v-for="tab in tabs" :key="tab.path" :label="tab.label" :name="tab.path" />
+  </el-tabs>
 </template>
 
 <style scoped lang="scss">
-@use '@/styles/variables' as *;
-.workspace-tabs { display: flex; gap: $spacing-sm; margin-bottom: $spacing-lg; border-bottom: 1px solid $color-border; }
-.workspace-tabs__item { padding: $spacing-sm $spacing-md; color: $color-text-secondary; border-bottom: 2px solid transparent; font-size: $font-size-sm; }
-.workspace-tabs__item:hover { color: $color-text; }
-.workspace-tabs__item--active { color: $color-primary-dark; border-bottom-color: $color-primary; font-weight: 600; }
+.workspace-tabs { margin-bottom: 16px; }
 </style>
