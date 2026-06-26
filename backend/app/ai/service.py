@@ -11,7 +11,6 @@ from app.ai.tools.memory import (
     save_world_settings,
     save_foreshadowing_candidates,
 )
-from app.ai.middleware.logging import logging_middleware
 from app.repositories.pending_memory_repo import PendingMemoryRepo
 from app.core.database import async_session_factory
 
