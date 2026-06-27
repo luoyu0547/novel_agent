@@ -3,7 +3,6 @@
 import json
 import datetime
 import logging
-import math
 import re
 from typing import Optional
 
@@ -14,6 +13,7 @@ from sqlalchemy.orm import selectinload
 from app.ai.writer import BaseWritingGenerator, DeepSeekWritingGenerator
 from app.core.exceptions import NotFound, AppException
 from app.models.novel import Novel, Chapter
+from app.models.writing import NovelBlueprint, ChapterPlan, ChapterBrief, ContextPackage, WritingRun
 from app.repositories.novel_repo import NovelRepo
 from app.repositories.writing_repo import (
     BlueprintRepo,
@@ -79,20 +79,20 @@ class WritingService:
         await self._ensure_owned_novel()
         return await self.blueprint_repo.list_by_novel(self.novel_id)
 
-    async def generate_blueprint(self, author_input: str):
+    async def generate_blueprint(self, author_input: str) -> NovelBlueprint:
         novel = await self._ensure_owned_novel()
         novel_data = {"title": novel.title, "description": novel.description, "genre": novel.genre, "style_guide": novel.style_guide}
         content = await self.generator.generate_blueprint(novel_data, author_input)
         return await self.blueprint_repo.create(self.novel_id, {"content_json": content, "status": "draft"})
 
-    async def update_blueprint(self, blueprint_id: int, data: dict):
+    async def update_blueprint(self, blueprint_id: int, data: dict) -> NovelBlueprint:
         await self._ensure_owned_novel()
         blueprint = await self.blueprint_repo.get_by_id(blueprint_id)
         if not blueprint or blueprint.novel_id != self.novel_id:
             raise NotFound("蓝图不存在")
         return await self.blueprint_repo.update(blueprint, data)
 
-    async def activate_blueprint(self, blueprint_id: int):
+    async def activate_blueprint(self, blueprint_id: int) -> NovelBlueprint:
         await self._ensure_owned_novel()
         blueprint = await self.blueprint_repo.get_by_id(blueprint_id)
         if not blueprint or blueprint.novel_id != self.novel_id:
@@ -104,7 +104,7 @@ class WritingService:
 
     # ---- Chapter Plan ----
 
-    async def generate_chapter_plan(self):
+    async def generate_chapter_plan(self) -> ChapterPlan:
         novel = await self._ensure_owned_novel()
         blueprint = await self.blueprint_repo.get_active(self.novel_id)
         if not blueprint:
@@ -117,7 +117,7 @@ class WritingService:
         position = (len(chapters) or 0) + 1
         return await self.plan_repo.create(self.novel_id, {"content_json": content, "position": position, "status": "ready"})
 
-    async def update_chapter_plan(self, plan_id: int, data: dict):
+    async def update_chapter_plan(self, plan_id: int, data: dict) -> ChapterPlan:
         await self._ensure_owned_novel()
         plan = await self.plan_repo.get_by_id(plan_id)
         if not plan or plan.novel_id != self.novel_id:
@@ -126,7 +126,7 @@ class WritingService:
 
     # ---- Chapter Brief ----
 
-    async def generate_chapter_brief(self, plan_id: int):
+    async def generate_chapter_brief(self, plan_id: int) -> ChapterBrief:
         novel = await self._ensure_owned_novel()
         plan = await self.plan_repo.get_by_id(plan_id)
         if not plan or plan.novel_id != self.novel_id:
@@ -141,7 +141,7 @@ class WritingService:
             "status": "ready",
         })
 
-    async def update_chapter_brief(self, brief_id: int, data: dict):
+    async def update_chapter_brief(self, brief_id: int, data: dict) -> ChapterBrief:
         await self._ensure_owned_novel()
         brief = await self.brief_repo.get_by_id(brief_id)
         if not brief or brief.novel_id != self.novel_id:
@@ -150,7 +150,7 @@ class WritingService:
 
     # ---- Context Package ----
 
-    async def generate_context_package(self, brief_id: int):
+    async def generate_context_package(self, brief_id: int) -> ContextPackage:
         novel = await self._ensure_owned_novel()
         brief = await self.brief_repo.get_by_id(brief_id)
         if not brief or brief.novel_id != self.novel_id:
@@ -161,7 +161,7 @@ class WritingService:
             "package_json": orchestrated,
         })
 
-    async def _build_context_package(self, novel: Novel, brief) -> dict:
+    async def _build_context_package(self, novel: Novel, brief: ChapterBrief) -> dict:
         chapters = novel.chapters or []
         previous_chapter = chapters[-1] if chapters else None
         package = {
@@ -193,7 +193,7 @@ class WritingService:
 
     # ---- Writing Run ----
 
-    async def create_writing_run(self, brief_id: int):
+    async def create_writing_run(self, brief_id: int) -> WritingRun:
         novel = await self._ensure_owned_novel()
         brief = await self.brief_repo.get_by_id(brief_id)
         if not brief or brief.novel_id != self.novel_id:
@@ -231,7 +231,7 @@ class WritingService:
         await self._ensure_owned_novel()
         return await self.run_repo.list_by_novel(self.novel_id)
 
-    async def get_writing_run(self, run_id: int):
+    async def get_writing_run(self, run_id: int) -> WritingRun:
         await self._ensure_owned_novel()
         run = await self.run_repo.get_by_id(run_id)
         if not run or run.novel_id != self.novel_id:
