@@ -57,6 +57,7 @@ class BlueprintRepo:
             )
             .values(status="archived")
         )
+        await self.db.commit()
 
 
 class ChapterPlanRepo:

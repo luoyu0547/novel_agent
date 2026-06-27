@@ -296,19 +296,20 @@ async def test_writing_run_discard(client, novel_and_headers):
     resp = await client.post(f"/api/v1/novels/{novel['id']}/context-packages/generate", headers=headers, json={"chapter_brief_id": brief_id})
     run_resp = await client.post(f"/api/v1/novels/{novel['id']}/writing-runs", headers=headers, json={"chapter_brief_id": brief_id})
     run = run_resp.json()["data"]
-    if run["status"] == "completed":
-        chapter_count_resp = await client.get(f"/api/v1/novels/{novel['id']}", headers=headers)
-        chapter_count_before = len(chapter_count_resp.json()["data"].get("chapters", []))
-        discard_resp = await client.put(
-            f"/api/v1/novels/{novel['id']}/writing-runs/{run['id']}/discard",
-            headers=headers,
-        )
-        assert discard_resp.status_code == 200
-        run_resp2 = await client.get(
-            f"/api/v1/novels/{novel['id']}/writing-runs/{run['id']}",
-            headers=headers,
-        )
-        assert run_resp2.json()["data"]["status"] == "discarded"
+    if run["status"] != "completed":
+        pytest.skip("AI generation failed, skipping accept/discard tests")
+    chapter_count_resp = await client.get(f"/api/v1/novels/{novel['id']}", headers=headers)
+    chapter_count_before = len(chapter_count_resp.json()["data"].get("chapters", []))
+    discard_resp = await client.put(
+        f"/api/v1/novels/{novel['id']}/writing-runs/{run['id']}/discard",
+        headers=headers,
+    )
+    assert discard_resp.status_code == 200
+    run_resp2 = await client.get(
+        f"/api/v1/novels/{novel['id']}/writing-runs/{run['id']}",
+        headers=headers,
+    )
+    assert run_resp2.json()["data"]["status"] == "discarded"
 
 
 @pytest.mark.asyncio
@@ -326,16 +327,17 @@ async def test_double_accept_rejected(client, novel_and_headers):
     await client.post(f"/api/v1/novels/{novel['id']}/context-packages/generate", headers=headers, json={"chapter_brief_id": brief_id})
     run_resp = await client.post(f"/api/v1/novels/{novel['id']}/writing-runs", headers=headers, json={"chapter_brief_id": brief_id})
     run = run_resp.json()["data"]
-    if run["status"] == "completed":
-        await client.put(
-            f"/api/v1/novels/{novel['id']}/writing-runs/{run['id']}/accept",
-            headers=headers,
-        )
-        resp = await client.put(
-            f"/api/v1/novels/{novel['id']}/writing-runs/{run['id']}/accept",
-            headers=headers,
-        )
-        assert resp.status_code == 400
+    if run["status"] != "completed":
+        pytest.skip("AI generation failed, skipping double accept tests")
+    await client.put(
+        f"/api/v1/novels/{novel['id']}/writing-runs/{run['id']}/accept",
+        headers=headers,
+    )
+    resp = await client.put(
+        f"/api/v1/novels/{novel['id']}/writing-runs/{run['id']}/accept",
+        headers=headers,
+    )
+    assert resp.status_code == 400
 
 
 @pytest.mark.asyncio
