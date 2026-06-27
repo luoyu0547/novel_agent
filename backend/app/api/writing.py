@@ -168,7 +168,7 @@ async def create_writing_run(
     db: AsyncSession = Depends(get_db),
 ):
     svc = _get_service(db, current_user, novel_id)
-    run = await svc.create_writing_run(body.chapter_brief_id)
+    run = await svc.create_writing_run(body.chapter_brief_id, body.context_package_id)
     return ApiResponse.success(data=WritingRunOut.model_validate(run).model_dump())
 
 

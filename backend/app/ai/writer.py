@@ -142,6 +142,7 @@ class DeepSeekWritingGenerator(BaseWritingGenerator):
     async def generate_draft(self, context_package: dict) -> str:
         brief = context_package.get("chapter_brief", {})
         contract = context_package.get("length_contract", {})
+        expansion_hint = context_package.get("expansion_hint", "")
         prompt = f"""请根据以下章节任务书和上下文，写出一章小说正文。
 
 任务书：{json.dumps(brief, ensure_ascii=False)}
@@ -151,7 +152,8 @@ class DeepSeekWritingGenerator(BaseWritingGenerator):
 1. 按章节任务书写正文，不要自由发挥成另一章
 2. 按篇幅充分展开场景、冲突、反应、动作、对话和氛围
 3. 不输出大纲、列表、总结或解释，只输出章节正文
-4. 如果篇幅不足，优先扩写场景过程和角色反应"""
+4. 如果篇幅不足，优先扩写场景过程和角色反应
+{('5. ' + expansion_hint) if expansion_hint else ''}"""
         return await self._call_llm_text(prompt)
 
     async def _call_llm(self, prompt: str) -> dict:

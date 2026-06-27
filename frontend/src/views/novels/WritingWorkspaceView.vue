@@ -12,6 +12,10 @@ const showBlueprintEditor = ref(false)
 const blueprintText = ref('')
 const activeSection = ref<'blueprint' | 'plan' | 'brief' | 'context' | 'draft'>('blueprint')
 
+const latestDraftBlueprint = computed(() =>
+  store.blueprints.find(b => b.status === 'draft') || null,
+)
+
 const editingTargetWords = ref(3000)
 const editingMinWords = ref(2000)
 const editingMaxWords = ref(5000)
@@ -25,6 +29,8 @@ onMounted(async () => {
   if (store.activeBlueprint) {
     activeSection.value = 'plan'
     blueprintText.value = JSON.stringify(store.activeBlueprint.content_json, null, 2)
+  } else if (store.blueprints.length > 0) {
+    blueprintText.value = JSON.stringify(store.blueprints[0]!.content_json, null, 2)
   }
 })
 
@@ -33,7 +39,8 @@ async function handleGenerateBlueprint() {
     ElMessage.warning('请输入小说构思')
     return
   }
-  await store.generateBlueprint(novelId, authorInput.value)
+  const bp = await store.generateBlueprint(novelId, authorInput.value)
+  blueprintText.value = JSON.stringify(bp.content_json, null, 2)
   ElMessage.success('蓝图已生成')
   activeSection.value = 'plan'
 }
@@ -114,7 +121,7 @@ async function saveBlueprint(bpId: number) {
         <template #header>
           <span>1. 小说蓝图</span>
         </template>
-        <div v-if="!store.activeBlueprint">
+        <div v-if="!store.activeBlueprint && !store.blueprints.length">
           <el-input
             v-model="authorInput"
             type="textarea"
@@ -124,6 +131,12 @@ async function saveBlueprint(bpId: number) {
           <el-button type="primary" class="writing__btn" :loading="store.loading" @click="handleGenerateBlueprint">
             生成蓝图
           </el-button>
+        </div>
+        <div v-else-if="!store.activeBlueprint && latestDraftBlueprint">
+          <el-alert type="info" :closable="false" title="蓝图已生成，请激活" />
+          <pre class="writing__json">{{ blueprintText }}</pre>
+          <el-button type="primary" size="small" @click="handleActivate(latestDraftBlueprint.id)">激活蓝图</el-button>
+          <el-button size="small" @click="editBlueprint(latestDraftBlueprint)">编辑蓝图</el-button>
         </div>
         <div v-else>
           <el-alert type="success" :closable="false" title="蓝图已激活" />

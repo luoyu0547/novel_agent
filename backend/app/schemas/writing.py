@@ -90,3 +90,4 @@ class WritingRunOut(BaseModel):
 
 class WritingRunCreateRequest(BaseModel):
     chapter_brief_id: int
+    context_package_id: Optional[int] = None

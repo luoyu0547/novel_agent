@@ -83,14 +83,18 @@ class WritingService:
         novel = await self._ensure_owned_novel()
         novel_data = {"title": novel.title, "description": novel.description, "genre": novel.genre, "style_guide": novel.style_guide}
         content = await self.generator.generate_blueprint(novel_data, author_input)
-        return await self.blueprint_repo.create(self.novel_id, {"content_json": content, "status": "draft"})
+        result = await self.blueprint_repo.create(self.novel_id, {"content_json": content, "status": "draft"})
+        await self.db.commit()
+        return result
 
     async def update_blueprint(self, blueprint_id: int, data: dict) -> NovelBlueprint:
         await self._ensure_owned_novel()
         blueprint = await self.blueprint_repo.get_by_id(blueprint_id)
         if not blueprint or blueprint.novel_id != self.novel_id:
             raise NotFound("蓝图不存在")
-        return await self.blueprint_repo.update(blueprint, data)
+        result = await self.blueprint_repo.update(blueprint, data)
+        await self.db.commit()
+        return result
 
     async def activate_blueprint(self, blueprint_id: int) -> NovelBlueprint:
         await self._ensure_owned_novel()
@@ -100,7 +104,9 @@ class WritingService:
         if blueprint.status == "archived":
             raise AppException("已归档的蓝图无法激活")
         await self.blueprint_repo.deactivate_all(self.novel_id)
-        return await self.blueprint_repo.update(blueprint, {"status": "active"})
+        result = await self.blueprint_repo.update(blueprint, {"status": "active"})
+        await self.db.commit()
+        return result
 
     # ---- Chapter Plan ----
 
@@ -115,14 +121,18 @@ class WritingService:
         novel_data = {"chapters": chapters}
         content = await self.generator.generate_chapter_plan(blueprint.content_json, novel_data)
         position = (len(chapters) or 0) + 1
-        return await self.plan_repo.create(self.novel_id, {"content_json": content, "position": position, "status": "ready"})
+        result = await self.plan_repo.create(self.novel_id, {"content_json": content, "position": position, "status": "ready"})
+        await self.db.commit()
+        return result
 
     async def update_chapter_plan(self, plan_id: int, data: dict) -> ChapterPlan:
         await self._ensure_owned_novel()
         plan = await self.plan_repo.get_by_id(plan_id)
         if not plan or plan.novel_id != self.novel_id:
             raise NotFound("章节计划不存在")
-        return await self.plan_repo.update(plan, data)
+        result = await self.plan_repo.update(plan, data)
+        await self.db.commit()
+        return result
 
     # ---- Chapter Brief ----
 
@@ -134,19 +144,23 @@ class WritingService:
         blueprint = await self.blueprint_repo.get_active(self.novel_id)
         blueprint_data = blueprint.content_json if blueprint else {}
         brief_content = await self.generator.generate_chapter_brief(plan.content_json, blueprint_data, DEFAULT_LENGTH_CONTRACT)
-        return await self.brief_repo.create(self.novel_id, {
+        result = await self.brief_repo.create(self.novel_id, {
             "chapter_plan_id": plan_id,
             "brief_json": brief_content,
             "length_contract_json": dict(DEFAULT_LENGTH_CONTRACT),
             "status": "ready",
         })
+        await self.db.commit()
+        return result
 
     async def update_chapter_brief(self, brief_id: int, data: dict) -> ChapterBrief:
         await self._ensure_owned_novel()
         brief = await self.brief_repo.get_by_id(brief_id)
         if not brief or brief.novel_id != self.novel_id:
             raise NotFound("章节任务书不存在")
-        return await self.brief_repo.update(brief, data)
+        result = await self.brief_repo.update(brief, data)
+        await self.db.commit()
+        return result
 
     # ---- Context Package ----
 
@@ -156,10 +170,12 @@ class WritingService:
         if not brief or brief.novel_id != self.novel_id:
             raise NotFound("章节任务书不存在")
         orchestrated = await self._build_context_package(novel, brief)
-        return await self.context_repo.create(self.novel_id, {
+        result = await self.context_repo.create(self.novel_id, {
             "chapter_brief_id": brief_id,
             "package_json": orchestrated,
         })
+        await self.db.commit()
+        return result
 
     async def _build_context_package(self, novel: Novel, brief: ChapterBrief) -> dict:
         chapters = novel.chapters or []
@@ -193,13 +209,19 @@ class WritingService:
 
     # ---- Writing Run ----
 
-    async def create_writing_run(self, brief_id: int) -> WritingRun:
+    async def create_writing_run(self, brief_id: int, context_package_id: Optional[int] = None) -> WritingRun:
         novel = await self._ensure_owned_novel()
         brief = await self.brief_repo.get_by_id(brief_id)
         if not brief or brief.novel_id != self.novel_id:
             raise NotFound("章节任务书不存在")
-        package = await self._build_context_package(novel, brief)
-        context_package = await self.context_repo.create(self.novel_id, {"chapter_brief_id": brief_id, "package_json": package})
+        if context_package_id:
+            context_package = await self.context_repo.get_by_id(context_package_id)
+            if not context_package or context_package.novel_id != self.novel_id:
+                raise NotFound("上下文包不存在")
+            package = context_package.package_json
+        else:
+            package = await self._build_context_package(novel, brief)
+            context_package = await self.context_repo.create(self.novel_id, {"chapter_brief_id": brief_id, "package_json": package})
         run = await self.run_repo.create(self.novel_id, {
             "chapter_brief_id": brief_id,
             "context_package_id": context_package.id,
@@ -210,7 +232,15 @@ class WritingService:
             word_count = self._count_words(draft)
             gate_result = self._check_gate(draft, word_count, brief.length_contract_json)
             if not gate_result["passed"]:
-                draft = await self.generator.generate_draft(package)
+                package_with_hint = dict(package)
+                hints = []
+                if word_count < brief.length_contract_json.get("min_words", 2000):
+                    hints.append("草稿字数不足，请扩写场景过程、角色反应和冲突升级")
+                if gate_result.get("outline_like"):
+                    hints.append("草稿像大纲，请写出完整正文")
+                if hints:
+                    package_with_hint["expansion_hint"] = "；".join(hints)
+                draft = await self.generator.generate_draft(package_with_hint)
                 word_count = self._count_words(draft)
                 gate_result = self._check_gate(draft, word_count, brief.length_contract_json)
             run = await self.run_repo.update(run, {
@@ -225,6 +255,7 @@ class WritingService:
                 "status": "failed",
                 "error_message": str(e),
             })
+        await self.db.commit()
         return run
 
     async def get_writing_runs(self) -> list:
@@ -267,7 +298,7 @@ class WritingService:
                 status="draft",
             )
             self.db.add(chapter)
-            await self.db.commit()
+            await self.db.flush()
             run.target_chapter_id = chapter.id
         run.status = "accepted"
         run.accepted_at = datetime.datetime.now()
@@ -282,6 +313,7 @@ class WritingService:
         if run.status in ("accepted", "discarded"):
             raise AppException("该写作运行已处理")
         await self.run_repo.update(run, {"status": "discarded"})
+        await self.db.commit()
 
     # ---- Helpers ----
 
