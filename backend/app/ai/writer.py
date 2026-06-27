@@ -155,7 +155,7 @@ class DeepSeekWritingGenerator(BaseWritingGenerator):
         return await self._call_llm_text(prompt)
 
     async def _call_llm(self, prompt: str) -> dict:
-        """调用 DeepSeek 返回 JSON。"""
+        """调用 DeepSeek 返回 JSON。失败时返回空字典。"""
         agent = create_novel_agent(
             model_type="flash",
             tools=[],
@@ -167,7 +167,11 @@ class DeepSeekWritingGenerator(BaseWritingGenerator):
             {"configurable": {"thread_id": "writer-generate"}},
         )
         content = result["messages"][-1].content if result.get("messages") else "{}"
-        return json.loads(content)
+        try:
+            return json.loads(content) if content.strip() else {}
+        except json.JSONDecodeError:
+            logger.warning("LLM returned non-JSON response, falling back to empty dict")
+            return {}
 
     async def _call_llm_text(self, prompt: str) -> str:
         agent = create_novel_agent(

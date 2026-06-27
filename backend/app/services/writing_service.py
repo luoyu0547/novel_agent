@@ -267,11 +267,11 @@ class WritingService:
                 status="draft",
             )
             self.db.add(chapter)
-            await self.db.flush()
+            await self.db.commit()
             run.target_chapter_id = chapter.id
         run.status = "accepted"
         run.accepted_at = datetime.datetime.now()
-        await self.db.flush()
+        await self.db.commit()
         return chapter
 
     async def discard_writing_run(self, run_id: int):

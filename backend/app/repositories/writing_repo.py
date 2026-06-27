@@ -39,13 +39,13 @@ class BlueprintRepo:
     async def create(self, novel_id: int, data: dict) -> NovelBlueprint:
         blueprint = NovelBlueprint(novel_id=novel_id, **data)
         self.db.add(blueprint)
-        await self.db.flush()
+        await self.db.commit()
         return blueprint
 
     async def update(self, blueprint: NovelBlueprint, data: dict) -> NovelBlueprint:
         for key, value in data.items():
             setattr(blueprint, key, value)
-        await self.db.flush()
+        await self.db.commit()
         return blueprint
 
     async def deactivate_all(self, novel_id: int):
@@ -78,13 +78,13 @@ class ChapterPlanRepo:
     async def create(self, novel_id: int, data: dict) -> ChapterPlan:
         plan = ChapterPlan(novel_id=novel_id, **data)
         self.db.add(plan)
-        await self.db.flush()
+        await self.db.commit()
         return plan
 
     async def update(self, plan: ChapterPlan, data: dict) -> ChapterPlan:
         for key, value in data.items():
             setattr(plan, key, value)
-        await self.db.flush()
+        await self.db.commit()
         return plan
 
 
@@ -98,13 +98,13 @@ class ChapterBriefRepo:
     async def create(self, novel_id: int, data: dict) -> ChapterBrief:
         brief = ChapterBrief(novel_id=novel_id, **data)
         self.db.add(brief)
-        await self.db.flush()
+        await self.db.commit()
         return brief
 
     async def update(self, brief: ChapterBrief, data: dict) -> ChapterBrief:
         for key, value in data.items():
             setattr(brief, key, value)
-        await self.db.flush()
+        await self.db.commit()
         return brief
 
 
@@ -118,7 +118,7 @@ class ContextPackageRepo:
     async def create(self, novel_id: int, data: dict) -> ContextPackage:
         package = ContextPackage(novel_id=novel_id, **data)
         self.db.add(package)
-        await self.db.flush()
+        await self.db.commit()
         return package
 
 
@@ -140,11 +140,11 @@ class WritingRunRepo:
     async def create(self, novel_id: int, data: dict) -> WritingRun:
         run = WritingRun(novel_id=novel_id, **data)
         self.db.add(run)
-        await self.db.flush()
+        await self.db.commit()
         return run
 
     async def update(self, run: WritingRun, data: dict) -> WritingRun:
         for key, value in data.items():
             setattr(run, key, value)
-        await self.db.flush()
+        await self.db.commit()
         return run
