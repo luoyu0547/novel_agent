@@ -6,7 +6,7 @@ HTTP ``status_code``。错误码约定：HTTP 状态码后跟两位序号（如 
 
 
 class AppException(Exception):
-    def __init__(self, code: int, message: str, status_code: int = 400):
+    def __init__(self, message: str = "", code: int = 40000, status_code: int = 400):
         self.code = code
         self.message = message
         self.status_code = status_code
