@@ -53,12 +53,6 @@ TOOLS = [
 
 class NovelExtractionService:
     async def extract(self, novel_id: int, chapter_id: int, user_id: int, mode: str = "standard") -> dict:
-        state = NovelAgentState(
-            novel_id=novel_id,
-            chapter_id=chapter_id,
-            user_id=user_id,
-        )
-
         checkpointer = InMemorySaver()
         middleware = [logging_middleware]
 
@@ -89,19 +83,20 @@ class NovelExtractionService:
                     "novel_id": novel_id,
                     "chapter_id": chapter_id,
                     "user_id": user_id,
+                    "pending_confirmations": [],
                 },
                 config={"configurable": {"thread_id": f"extract-{novel_id}-{chapter_id}"}},
             )
         except Exception as e:
-            logger.error("Agent invocation failed: novel_id=%s chapter_id=%s error=%s", novel_id, chapter_id, str(e))
+            logger.exception("Agent invocation failed: novel_id=%s chapter_id=%s", novel_id, chapter_id)
             return {"chapter_summary": None, "pending_ids": [], "pending_count": 0, "error": str(e)}
 
-        final_state = result.get("state", state)
+        pending_entries = result.get("pending_confirmations", [])
 
         pending_ids = []
         async with async_session_factory() as db:
             repo = PendingMemoryRepo(db)
-            for entry in final_state.pending_confirmations:
+            for entry in pending_entries:
                 pm = await repo.create(
                     novel_id=novel_id,
                     chapter_id=chapter_id,

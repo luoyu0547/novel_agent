@@ -13,6 +13,8 @@ async def save_character_changes(
     changes 格式: [{name, field, change_description, reason}]
     示例: [{name: "主角", field: "current_state", change_description: "得知身世真相后情绪崩溃", reason: "第5章揭露身世"}]
     """
+    if "pending_confirmations" not in runtime.state:
+        return "错误：state 中缺少 pending_confirmations 字段"
     runtime.state["pending_confirmations"].append({
         "memory_type": "character_change",
         "data": changes,
@@ -29,6 +31,8 @@ async def save_plot_facts(
 
     facts 格式: [{event, characters_involved, importance, description}]
     """
+    if "pending_confirmations" not in runtime.state:
+        return "错误：state 中缺少 pending_confirmations 字段"
     runtime.state["pending_confirmations"].append({
         "memory_type": "plot_fact",
         "data": facts,
@@ -46,6 +50,8 @@ async def save_world_settings(
     settings 格式: [{title, category, content}]
     category 可选: geography | faction | rule | history | culture | other
     """
+    if "pending_confirmations" not in runtime.state:
+        return "错误：state 中缺少 pending_confirmations 字段"
     runtime.state["pending_confirmations"].append({
         "memory_type": "world_setting",
         "data": settings,
@@ -62,6 +68,8 @@ async def save_foreshadowing_candidates(
 
     candidates 格式: [{name, description, hint, expected_reveal_after_chapter, related_characters}]
     """
+    if "pending_confirmations" not in runtime.state:
+        return "错误：state 中缺少 pending_confirmations 字段"
     runtime.state["pending_confirmations"].append({
         "memory_type": "foreshadowing",
         "data": candidates,

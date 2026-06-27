@@ -25,7 +25,7 @@ def create_novel_agent(
         system_prompt=system_prompt,
         state_schema=state_schema,
         checkpointer=checkpointer,
-        middleware=middleware,
+        middleware=middleware or [],
     )
 
 
@@ -47,5 +47,5 @@ def create_novel_deep_agent(
         system_prompt=system_prompt,
         state_schema=state_schema,
         checkpointer=checkpointer,
-        middleware=middleware,
+        middleware=middleware or [],
     )
