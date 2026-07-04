@@ -2,6 +2,7 @@
 
 import pytest
 
+from app.ai.quality_gate import FakeQualityGateAgent, CheckResult
 from app.models.writing import RepairLog, PendingRepair, WritingRun
 from app.repositories.quality_gate_repo import RepairLogRepo, PendingRepairRepo
 
@@ -113,3 +114,23 @@ async def test_pending_repair_update_status(db):
     })
     updated = await repo.update_status(repair.id, "applied")
     assert updated.status == "applied"
+
+
+@pytest.mark.asyncio
+async def test_fake_quality_gate_returns_all_passed():
+    agent = FakeQualityGateAgent()
+    results = await agent.check("draft content", {}, {})
+    assert isinstance(results, list)
+    assert len(results) == 6
+    for r in results:
+        assert r.passed is True
+        assert r.severity == "auto_fixable"
+
+
+@pytest.mark.asyncio
+async def test_fake_quality_gate_with_story_data():
+    agent = FakeQualityGateAgent()
+    brief = {"plot_task": "主角发现真相"}
+    context = {"characters": [{"name": "张三", "personality": "谨慎"}]}
+    results = await agent.check("故事正文内容", brief, context)
+    assert all(r.passed for r in results)
