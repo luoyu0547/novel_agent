@@ -1,7 +1,6 @@
 """Tests for Quality Gate Phase 2: RepairLog, PendingRepair models and WritingRun extensions."""
 
 import pytest
-from sqlalchemy import select
 
 from app.models.writing import RepairLog, PendingRepair, WritingRun
 
