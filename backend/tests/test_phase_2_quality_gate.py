@@ -5,6 +5,7 @@ import pytest
 from app.ai.quality_gate import FakeQualityGateAgent, CheckResult
 from app.models.writing import RepairLog, PendingRepair, WritingRun
 from app.repositories.quality_gate_repo import RepairLogRepo, PendingRepairRepo
+from app.services.quality_gate_service import QualityGateService
 
 
 @pytest.mark.asyncio
@@ -134,3 +135,36 @@ async def test_fake_quality_gate_with_story_data():
     context = {"characters": [{"name": "张三", "personality": "谨慎"}]}
     results = await agent.check("故事正文内容", brief, context)
     assert all(r.passed for r in results)
+
+
+@pytest.mark.asyncio
+async def test_quality_gate_service_all_pass(db):
+    """全部通过时，不产生 RepairLog 和 PendingRepair。"""
+    from app.models.writing import WritingRun
+    run = WritingRun(novel_id=1, chapter_brief_id=1, context_package_id=1, status="running", draft_content="test", word_count=4)
+    db.add(run)
+    await db.flush()
+    svc = QualityGateService(db=db, agent=FakeQualityGateAgent())
+    result = await svc.run(run, {}, {})
+    assert result["gated"] is True
+    assert result["has_pending_repairs"] is False
+    logs_repo = RepairLogRepo(db)
+    logs = await logs_repo.list_by_writing_run(run.id)
+    assert len(logs) == 0
+    pend_repo = PendingRepairRepo(db)
+    repairs = await pend_repo.list_by_writing_run(run.id)
+    assert len(repairs) == 0
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_quality_gate_service_no_agent(db):
+    """不传 agent 时使用 FakeQualityGateAgent（默认行为）。"""
+    from app.models.writing import WritingRun
+    run = WritingRun(novel_id=1, chapter_brief_id=1, context_package_id=1, status="running", draft_content="test", word_count=4)
+    db.add(run)
+    await db.flush()
+    svc = QualityGateService(db=db)
+    result = await svc.run(run, {}, {})
+    assert result["gated"] is True
+    await db.rollback()
