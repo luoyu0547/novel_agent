@@ -25,7 +25,7 @@ class QualityGateService:
             results = await self.agent.check(run.draft_content, brief, context_package)
         except Exception as e:
             logger.exception("Quality gate check failed, skipping")
-            return {"gated": False, "has_pending_repairs": False}
+            return {"gated": False, "has_pending_repairs": False, "rewrite_needed": False}
 
         has_pending = False
         auto_rewrite_needed = False
