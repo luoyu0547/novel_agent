@@ -3,6 +3,7 @@
 import pytest
 
 from app.models.writing import RepairLog, PendingRepair, WritingRun
+from app.repositories.quality_gate_repo import RepairLogRepo, PendingRepairRepo
 
 
 @pytest.mark.asyncio
@@ -65,3 +66,50 @@ async def test_writing_run_has_gate_fields(db):
     result = await db.get(WritingRun, run.id)
     assert result.gated is True
     assert result.has_pending_repairs is False
+
+
+@pytest.mark.asyncio
+async def test_repair_log_repo_create_and_list(db):
+    repo = RepairLogRepo(db)
+    log = await repo.create(1, 1, {
+        "issue_type": "style",
+        "description": "风格修复",
+        "location": "第1段",
+        "old_text": "旧文本",
+        "new_text": "新文本",
+    })
+    assert log.id is not None
+    logs = await repo.list_by_writing_run(1)
+    assert len(logs) == 1
+    assert logs[0].issue_type == "style"
+
+
+@pytest.mark.asyncio
+async def test_pending_repair_repo_create_and_list(db):
+    repo = PendingRepairRepo(db)
+    repair = await repo.create(1, 1, 1, {
+        "issue_type": "character_choice",
+        "description": "角色选择",
+        "location": "第3段",
+        "context": "原文",
+        "options": [{"label": "A", "summary": "方案A"}],
+        "intent_type": "choice",
+    })
+    assert repair.id is not None
+    repairs = await repo.list_pending_by_writing_run(1)
+    assert len(repairs) == 1
+    assert repairs[0].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_pending_repair_update_status(db):
+    repo = PendingRepairRepo(db)
+    repair = await repo.create(1, 1, 1, {
+        "issue_type": "character_choice",
+        "description": "角色选择",
+        "location": "第3段",
+        "context": "原文",
+        "intent_type": "choice",
+    })
+    updated = await repo.update_status(repair.id, "applied")
+    assert updated.status == "applied"
