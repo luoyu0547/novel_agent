@@ -25,11 +25,14 @@ npm run type-check   # vue-tsc --build (NOT plain tsc)
 npm run test:unit    # vitest
 npm run test:e2e     # playwright test (needs `npx playwright install` first)
 npm run lint         # oxlint then eslint (sequential, not parallel)
-npm run build        # type-check + vite build
+npm run build        # type-check + vite build (parallel)
 npm run format       # prettier --write src/
 ```
-- **Auto-import**: `unplugin-auto-import` injects Vue APIs (`ref`, `computed`, etc.) and ElMessage/ElMessageBox. `unplugin-vue-components` injects Element Plus components. Do NOT manually import these — they are globally available without imports.
+- Requires Node `^22.18.0 || >=24.12.0`.
+- **Auto-import**: `unplugin-auto-import` injects Vue APIs (`ref`, `computed`, etc.), vue-router, and `ElMessage`/`ElMessageBox`. `unplugin-vue-components` injects Element Plus components. Do NOT manually import these — they are globally available without imports.
 - `@/` path alias maps to `src/`.
+- **Prettier**: `semi: false`, `singleQuote: true`, `printWidth: 100`.
+- **Router guard** (`src/router/index.ts`): `meta.auth` routes redirect to `/login` when no token; `meta.guest` routes redirect to `/novels` when token exists.
 
 ## Architecture notes
 - **Layer flow**: `api/` (routes) → `services/` (business logic) → `repositories/` (DB queries) → `models/` (SQLAlchemy ORM)
@@ -61,3 +64,5 @@ npm run format       # prettier --write src/
 - `docs/novel-agent系统需求文档第二版.md` — v2 requirements (autonomous writing loop: blueprint → plan → brief → write → review → memory)
 - `docs/superpowers/specs/` — design specs for each phase
 - `docs/superpowers/plans/` — implementation plans for each phase
+
+

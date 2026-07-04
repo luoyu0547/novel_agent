@@ -70,7 +70,40 @@ class WritingRun(Base):
     draft_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     word_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     gate_result_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    gated: Mapped[bool] = mapped_column(default=False)
+    has_pending_repairs: Mapped[bool] = mapped_column(default=False)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     accepted_at: Mapped[Optional[datetime.datetime]] = mapped_column(nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now)
     updated_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now, onupdate=datetime.datetime.now)
+
+
+class RepairLog(Base):
+    __tablename__ = "repair_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id"), nullable=False, index=True)
+    writing_run_id: Mapped[int] = mapped_column(ForeignKey("writing_runs.id"), nullable=False, index=True)
+    issue_type: Mapped[str] = mapped_column(nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    location: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    old_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    new_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now)
+
+
+class PendingRepair(Base):
+    __tablename__ = "pending_repairs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id"), nullable=False, index=True)
+    chapter_id: Mapped[int] = mapped_column(ForeignKey("chapters.id"), nullable=False)
+    writing_run_id: Mapped[int] = mapped_column(ForeignKey("writing_runs.id"), nullable=False, index=True)
+    issue_type: Mapped[str] = mapped_column(nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    location: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    context: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    options: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    intent_type: Mapped[str] = mapped_column(nullable=False)
+    status: Mapped[str] = mapped_column(default="pending")
+    created_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now)

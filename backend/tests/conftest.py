@@ -14,7 +14,7 @@ os.environ["APP_ENV"] = "test"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DB_PATH}"
 os.environ["SECRET_KEY"] = "test-secret-key"
 
-from app.core.database import Base, engine  # noqa: E402
+from app.core.database import Base, async_session_factory, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Chapter, CharacterProfile, Novel, User, WorldSetting  # noqa: F401, E402
 
@@ -34,3 +34,9 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as test_client:
         yield test_client
+
+
+@pytest.fixture
+async def db():
+    async with async_session_factory() as session:
+        yield session
