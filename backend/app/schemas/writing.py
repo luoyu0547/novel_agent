@@ -91,3 +91,45 @@ class WritingRunOut(BaseModel):
 class WritingRunCreateRequest(BaseModel):
     chapter_brief_id: int
     context_package_id: Optional[int] = None
+
+
+class RepairLogOut(BaseModel):
+    id: int
+    novel_id: int
+    writing_run_id: int
+    issue_type: str
+    description: str
+    location: str
+    old_text: str
+    new_text: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PendingRepairOut(BaseModel):
+    id: int
+    novel_id: int
+    chapter_id: int
+    writing_run_id: int
+    issue_type: str
+    description: str
+    location: str
+    context: str
+    options: Optional[list] = None
+    intent_type: str
+    status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ResolveRepairRequest(BaseModel):
+    action: str = Field(...)  # "apply"
+    choice_index: Optional[int] = None
+    intent_text: Optional[str] = None
+
+
+class RepairsResponse(BaseModel):
+    repair_logs: list[RepairLogOut]
+    pending_repairs: list[PendingRepairOut]
