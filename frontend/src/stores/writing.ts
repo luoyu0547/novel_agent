@@ -1,7 +1,7 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as api from '@/api/writing'
-import type { NovelBlueprint, ChapterPlan, ChapterBrief, ContextPackage, WritingRun } from '@/types/writing'
+import type { NovelBlueprint, ChapterPlan, ChapterBrief, ContextPackage, WritingRun, RepairLog, PendingRepair } from '@/types/writing'
 
 export const useWritingStore = defineStore('writing', () => {
   const blueprints = ref<NovelBlueprint[]>([])
@@ -11,6 +11,8 @@ export const useWritingStore = defineStore('writing', () => {
   const latestContext = ref<ContextPackage | null>(null)
   const writingRuns = ref<WritingRun[]>([])
   const loading = ref(false)
+  const repairLogs = ref<RepairLog[]>([])
+  const pendingRepairs = ref<PendingRepair[]>([])
 
   async function fetchBlueprints(novelId: number) {
     blueprints.value = await api.listBlueprints(novelId)
@@ -105,12 +107,26 @@ export const useWritingStore = defineStore('writing', () => {
     writingRuns.value = await api.listWritingRuns(novelId)
   }
 
+  async function fetchRepairs(novelId: number, runId: number) {
+    const data = await api.getRepairs(novelId, runId)
+    repairLogs.value = data.repair_logs
+    pendingRepairs.value = data.pending_repairs
+  }
+
+  async function resolveRepair(novelId: number, repairId: number, payload: { action: 'apply' | 'dismiss'; choice_index?: number; intent_text?: string }) {
+    await api.resolveRepair(novelId, repairId, payload)
+    pendingRepairs.value = pendingRepairs.value.map(r =>
+      r.id === repairId ? { ...r, status: 'applied' as const } : r,
+    )
+  }
+
   return {
     blueprints, activeBlueprint, latestPlan, latestBrief, latestContext,
-    writingRuns, loading,
+    writingRuns, loading, repairLogs, pendingRepairs,
     fetchBlueprints, generateBlueprint, activateBlueprint, updateBlueprint,
     generateChapterPlan, generateChapterBrief, generateContextPackage,
     createWritingRun, acceptRun, discardRun, fetchWritingRuns,
+    fetchRepairs, resolveRepair,
   }
 })
 

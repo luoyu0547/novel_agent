@@ -95,3 +95,40 @@ export interface WritingRun {
   created_at: string
   updated_at: string
 }
+
+export interface RepairLog {
+  id: number
+  novel_id: number
+  writing_run_id: number
+  issue_type: string
+  description: string
+  location: string
+  old_text: string
+  new_text: string
+  created_at: string
+}
+
+export interface PendingRepairOption {
+  label: string
+  summary: string
+}
+
+export interface PendingRepair {
+  id: number
+  novel_id: number
+  chapter_id: number
+  writing_run_id: number
+  issue_type: string
+  description: string
+  location: string
+  context: string
+  options: PendingRepairOption[] | null
+  intent_type: 'choice' | 'freeform'
+  status: 'pending' | 'applied' | 'dismissed'
+  created_at: string
+}
+
+export interface RepairsResponse {
+  repair_logs: RepairLog[]
+  pending_repairs: PendingRepair[]
+}

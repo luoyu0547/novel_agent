@@ -1,5 +1,5 @@
 import client from './client'
-import type { NovelBlueprint, ChapterPlan, ChapterBrief, ContextPackage, WritingRun } from '@/types/writing'
+import type { NovelBlueprint, ChapterPlan, ChapterBrief, ContextPackage, WritingRun, RepairsResponse } from '@/types/writing'
 import type { ChapterOut } from '@/types/novel'
 
 export function generateBlueprint(novelId: number, authorInput: string): Promise<NovelBlueprint> {
@@ -56,4 +56,20 @@ export function acceptWritingRun(novelId: number, runId: number): Promise<Chapte
 
 export function discardWritingRun(novelId: number, runId: number): Promise<void> {
   return client.put(`/novels/${novelId}/writing-runs/${runId}/discard`)
+}
+
+export function getRepairs(novelId: number, runId: number): Promise<RepairsResponse> {
+  return client.get(`/novels/${novelId}/writing-runs/${runId}/repairs`)
+}
+
+export function getPendingRepairs(novelId: number, runId: number): Promise<{ id: number; issue_type: string }[]> {
+  return client.get(`/novels/${novelId}/writing-runs/${runId}/repairs/pending`)
+}
+
+export function resolveRepair(
+  novelId: number,
+  repairId: number,
+  payload: { action: 'apply' | 'dismiss'; choice_index?: number; intent_text?: string },
+): Promise<void> {
+  return client.put(`/novels/${novelId}/writing/repairs/${repairId}/resolve`, payload)
 }
