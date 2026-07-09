@@ -151,7 +151,7 @@ async def test_fake_quality_gate_returns_all_passed():
     agent = FakeQualityGateAgent()
     results = await agent.check("draft content", {}, {})
     assert isinstance(results, list)
-    assert len(results) == 6
+    assert len(results) == 7
     for r in results:
         assert r.passed is True
         assert r.severity == "auto_fixable"

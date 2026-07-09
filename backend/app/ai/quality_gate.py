@@ -25,6 +25,7 @@ AGENT_TYPES = [
     "continuity",
     "world",
     "foreshadowing",
+    "length",
 ]
 
 

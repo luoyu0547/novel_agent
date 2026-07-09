@@ -273,7 +273,6 @@ async def resolve_repair(
         raise NotFound("修复项不存在")
     if repair.status != "pending":
         raise AppException("该修复项已处理")
-    import datetime
     if body.action == "apply":
         await pending_repo.update_status(repair_id, "applied")
     elif body.action == "dismiss":
