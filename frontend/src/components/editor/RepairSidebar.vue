@@ -10,12 +10,12 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'resolve', repairId: number, payload: { action: string; choice_index?: number; intent_text?: string }): void
+  (e: 'resolve', repairId: number, payload: { action: 'apply' | 'dismiss'; choice_index?: number; intent_text?: string }): void
 }>()
 
 const logsExpanded = ref(false)
 
-function handleResolve(repairId: number, payload: { action: string; choice_index?: number; intent_text?: string }) {
+function handleResolve(repairId: number, payload: { action: 'apply' | 'dismiss'; choice_index?: number; intent_text?: string }) {
   emit('resolve', repairId, payload)
 }
 

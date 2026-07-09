@@ -2,10 +2,11 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useNovelStore } from '@/stores/novels'
+import { useWritingStore } from '@/stores/writing'
 import WritingEditor from '@/components/editor/WritingEditor.vue'
 import type { ChapterStatus } from '@/types'
 
-const route = useRoute(); const novelStore = useNovelStore()
+const route = useRoute(); const novelStore = useNovelStore(); const writingStore = useWritingStore()
 const novelId = computed(() => Number(route.params.id))
 const chapterId = computed(() => Number(route.params.chapterId))
 const title = ref(''); const content = ref(''); const saving = ref(false); const savedAt = ref<string | null>(null)
@@ -21,6 +22,11 @@ onMounted(async () => {
     summary.value = novelStore.currentChapter.summary
     status.value = novelStore.currentChapter.status
   }
+  await writingStore.fetchWritingRuns(novelId.value)
+  const lastRun = writingStore.writingRuns[0]
+  if (lastRun && lastRun.status === 'completed') {
+    await writingStore.fetchRepairs(novelId.value, lastRun.id)
+  }
 })
 
 async function handleSave() {
@@ -34,6 +40,10 @@ async function handleSave() {
     })
     savedAt.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
   } finally { saving.value = false }
+}
+
+function handleResolveRepair(repairId: number, payload: { action: 'apply' | 'dismiss'; choice_index?: number; intent_text?: string }) {
+  writingStore.resolveRepair(novelId.value, repairId, payload)
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -51,10 +61,13 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
       :status="status"
       :saving="saving"
       :saved-at="savedAt"
+      :repair-logs="writingStore.repairLogs"
+      :pending-repairs="writingStore.pendingRepairs"
       @update:title="title = $event"
       @update:content="content = $event"
       @update:status="status = $event"
       @save="handleSave"
+      @resolve="handleResolveRepair"
     />
   </div>
 </template>

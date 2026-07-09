@@ -27,7 +27,7 @@ const emit = defineEmits<{
   'update:content': [value: string]
   'update:status': [value: ChapterStatus]
   save: []
-  resolve: [repairId: number, payload: { action: string; choice_index?: number; intent_text?: string }]
+  resolve: [repairId: number, payload: { action: 'apply' | 'dismiss'; choice_index?: number; intent_text?: string }]
 }>()
 
 const hasRepairs = computed(() =>
@@ -48,7 +48,7 @@ function onManualSave() {
   emit('save')
 }
 
-function handleResolveRepair(repairId: number, payload: { action: string; choice_index?: number; intent_text?: string }) {
+function handleResolveRepair(repairId: number, payload: { action: 'apply' | 'dismiss'; choice_index?: number; intent_text?: string }) {
   emit('resolve', repairId, payload)
 }
 
