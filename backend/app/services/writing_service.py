@@ -10,7 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.ai.quality_gate import BaseQualityGateAgent, FakeQualityGateAgent
 from app.ai.writer import BaseWritingGenerator, DeepSeekWritingGenerator
+from app.services.quality_gate_service import QualityGateService
 from app.core.exceptions import NotFound, AppException
 from app.models.novel import Novel, Chapter
 from app.models.writing import NovelBlueprint, ChapterPlan, ChapterBrief, ContextPackage, WritingRun
@@ -44,11 +46,13 @@ class WritingService:
         user_id: int,
         novel_id: int,
         generator: Optional[BaseWritingGenerator] = None,
+        gate_agent: Optional[BaseQualityGateAgent] = None,
     ):
         self.db = db
         self.user_id = user_id
         self.novel_id = novel_id
         self.generator = generator or DeepSeekWritingGenerator()
+        self.gate_agent = gate_agent
         self.novel_repo = NovelRepo(db)
         self.blueprint_repo = BlueprintRepo(db)
         self.plan_repo = ChapterPlanRepo(db)
@@ -243,10 +247,34 @@ class WritingService:
                 draft = await self.generator.generate_draft(package_with_hint)
                 word_count = self._count_words(draft)
                 gate_result = self._check_gate(draft, word_count, brief.length_contract_json)
+
+            # --- Quality Gate (with auto-fix retry loop, max 3 iterations) ---
+            run.draft_content = draft
+            run.word_count = word_count
+            run.gate_result_json = gate_result
+            gate_svc = QualityGateService(db=self.db, agent=self.gate_agent)
+            gate_svc_result = {"gated": False, "has_pending_repairs": False, "rewrite_needed": False}
+            for retry in range(3):
+                gate_svc_result = await gate_svc.run(run, brief.brief_json, package)
+                if gate_svc_result.get("rewrite_needed"):
+                    package_with_feedback = dict(package)
+                    feedback = await self._collect_gate_feedback(run.id)
+                    package_with_feedback["gate_feedback"] = feedback
+                    draft = await self.generator.generate_draft(package_with_feedback)
+                    word_count = self._count_words(draft)
+                    run.draft_content = draft
+                    run.word_count = word_count
+                    run.gate_result_json = {"passed": True}
+                else:
+                    break
+            # ---
+
             run = await self.run_repo.update(run, {
                 "draft_content": draft,
                 "word_count": word_count,
                 "gate_result_json": gate_result,
+                "gated": gate_svc_result["gated"],
+                "has_pending_repairs": gate_svc_result["has_pending_repairs"],
                 "status": "completed",
             })
         except Exception as e:
@@ -268,6 +296,15 @@ class WritingService:
         if not run or run.novel_id != self.novel_id:
             raise NotFound("写作运行不存在")
         return run
+
+    async def get_writing_run_with_repairs(self, run_id: int) -> dict:
+        run = await self.get_writing_run(run_id)
+        from app.repositories.quality_gate_repo import RepairLogRepo, PendingRepairRepo
+        log_repo = RepairLogRepo(self.db)
+        pending_repo = PendingRepairRepo(self.db)
+        logs = await log_repo.list_by_writing_run(run_id)
+        pending = await pending_repo.list_by_writing_run(run_id)
+        return {"run": run, "repair_logs": logs, "pending_repairs": pending}
 
     async def accept_writing_run(self, run_id: int):
         """接受草稿，写入章节正文或创建新章节。"""
@@ -347,3 +384,10 @@ class WritingService:
         marker_lines = sum(1 for l in lines if l.strip().startswith(("- ", "* ", "1.", "场景", "步骤")))
         ratio = marker_lines / len(lines)
         return ratio > 0.3
+
+    async def _collect_gate_feedback(self, run_id: int) -> str:
+        """Collect RepairLog descriptions from the current run as feedback text."""
+        from app.repositories.quality_gate_repo import RepairLogRepo
+        log_repo = RepairLogRepo(self.db)
+        logs = await log_repo.list_by_writing_run(run_id)
+        return "；".join(l.description for l in logs if l.description)

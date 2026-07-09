@@ -1,11 +1,40 @@
 """Tests for Quality Gate Phase 2: RepairLog, PendingRepair models and WritingRun extensions."""
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from app.ai.quality_gate import FakeQualityGateAgent, CheckResult
+from app.main import app
 from app.models.writing import RepairLog, PendingRepair, WritingRun
 from app.repositories.quality_gate_repo import RepairLogRepo, PendingRepairRepo
 from app.services.quality_gate_service import QualityGateService
+
+
+async def _register_headers(client, username: str) -> dict[str, str]:
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={"username": username, "password": "password123"},
+    )
+    assert response.status_code == 200
+    token = response.json()["data"]["token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def _create_novel(client, headers: dict[str, str]) -> dict:
+    response = await client.post(
+        "/api/v1/novels",
+        headers=headers,
+        json={"title": "写作测试小说", "description": "用于测试自主写作闭环", "genre": "古风权谋", "style_guide": "第三人称有限视角"},
+    )
+    assert response.status_code == 200
+    return response.json()["data"]
+
+
+@pytest.fixture
+async def novel_and_headers(client):
+    headers = await _register_headers(client, "quality_gate_user")
+    novel = await _create_novel(client, headers)
+    return novel, headers
 
 
 @pytest.mark.asyncio
@@ -168,3 +197,44 @@ async def test_quality_gate_service_no_agent(db):
     result = await svc.run(run, {}, {})
     assert result["gated"] is True
     await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_quality_gate_in_writing_flow(client, novel_and_headers):
+    """写作流程中质量门禁自动执行。"""
+    novel, headers = novel_and_headers
+    novel_id = novel["id"]
+
+    # Generate blueprint
+    bp_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/blueprints/generate",
+        headers=headers,
+        json={"author_input": "测试"},
+    )
+    bp_id = bp_resp.json()["data"]["id"]
+    await client.put(f"/api/v1/novels/{novel_id}/blueprints/{bp_id}/activate", headers=headers)
+
+    # Generate chapter plan
+    plan_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/chapter-plans/next/generate",
+        headers=headers,
+    )
+    plan_id = plan_resp.json()["data"]["id"]
+
+    # Generate chapter brief
+    brief_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/chapter-briefs/generate",
+        headers=headers,
+        json={"chapter_plan_id": plan_id},
+    )
+    brief_id = brief_resp.json()["data"]["id"]
+
+    # Create writing run
+    run_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/writing-runs",
+        headers=headers,
+        json={"chapter_brief_id": brief_id},
+    )
+    assert run_resp.status_code == 200
+    run = run_resp.json()["data"]
+    assert "gated" in run
