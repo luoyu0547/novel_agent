@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.exceptions import AppException
+from app.core.exceptions import AppException, NotFound
 from app.core.response import ApiResponse
 from app.core.security import get_current_user
 from app.models.user import User
+from app.repositories.quality_gate_repo import RepairLogRepo, PendingRepairRepo
 from app.schemas.writing import (
     BlueprintGenerateRequest,
     BlueprintUpdateRequest,
@@ -17,6 +18,9 @@ from app.schemas.writing import (
     ChapterBriefOut,
     ContextPackageOut,
     WritingRunOut,
+    RepairLogOut,
+    PendingRepairOut,
+    ResolveRepairRequest,
 )
 from app.services.writing_service import WritingService
 
@@ -218,3 +222,68 @@ async def discard_writing_run(
     svc = _get_service(db, current_user, novel_id)
     await svc.discard_writing_run(run_id)
     return ApiResponse.success(message="草稿已废弃")
+
+
+@router.get("/writing-runs/{run_id}/repairs")
+async def list_repairs(
+    novel_id: int,
+    run_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    svc = _get_service(db, current_user, novel_id)
+    run = await svc.get_writing_run(run_id)
+    log_repo = RepairLogRepo(db)
+    pending_repo = PendingRepairRepo(db)
+    logs = await log_repo.list_by_writing_run(run_id)
+    pending = await pending_repo.list_by_writing_run(run_id)
+    return ApiResponse.success(data={
+        "repair_logs": [RepairLogOut.model_validate(l).model_dump() for l in logs],
+        "pending_repairs": [PendingRepairOut.model_validate(p).model_dump() for p in pending],
+    })
+
+
+@router.get("/writing-runs/{run_id}/repairs/pending")
+async def list_pending_repairs(
+    novel_id: int,
+    run_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    svc = _get_service(db, current_user, novel_id)
+    await svc.get_writing_run(run_id)
+    pending_repo = PendingRepairRepo(db)
+    pending = await pending_repo.list_pending_by_writing_run(run_id)
+    return ApiResponse.success(data=[PendingRepairOut.model_validate(p).model_dump() for p in pending])
+
+
+@router.put("/writing/repairs/{repair_id}/resolve")
+async def resolve_repair(
+    novel_id: int,
+    repair_id: int,
+    body: ResolveRepairRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    svc = _get_service(db, current_user, novel_id)
+    await svc._ensure_owned_novel()
+    pending_repo = PendingRepairRepo(db)
+    repair = await pending_repo.get_by_id(repair_id)
+    if not repair or repair.novel_id != novel_id:
+        raise NotFound("修复项不存在")
+    if repair.status != "pending":
+        raise AppException("该修复项已处理")
+    import datetime
+    if body.action == "apply":
+        await pending_repo.update_status(repair_id, "applied")
+    elif body.action == "dismiss":
+        await pending_repo.update_status(repair_id, "dismissed")
+    else:
+        raise AppException(f"不支持的动作: {body.action}")
+    await db.commit()
+    remaining = await pending_repo.list_pending_by_writing_run(repair.writing_run_id)
+    if not remaining:
+        run = await svc.get_writing_run(repair.writing_run_id)
+        run.has_pending_repairs = False
+        await db.commit()
+    return ApiResponse.success(message="修复项已处理")

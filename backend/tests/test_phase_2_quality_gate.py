@@ -238,3 +238,35 @@ async def test_quality_gate_in_writing_flow(client, novel_and_headers):
     assert run_resp.status_code == 200
     run = run_resp.json()["data"]
     assert "gated" in run
+
+
+@pytest.mark.asyncio
+async def test_get_repairs_endpoint(client, novel_and_headers):
+    novel, headers = novel_and_headers
+    novel_id = novel["id"]
+
+    bp_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/blueprints/generate",
+        headers=headers,
+        json={"author_input": "测试"},
+    )
+    bp_id = bp_resp.json()["data"]["id"]
+    await client.put(f"/api/v1/novels/{novel_id}/blueprints/{bp_id}/activate", headers=headers)
+    plan_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/chapter-plans/next/generate", headers=headers)
+    plan_id = plan_resp.json()["data"]["id"]
+    brief_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/chapter-briefs/generate", headers=headers,
+        json={"chapter_plan_id": plan_id})
+    brief_id = brief_resp.json()["data"]["id"]
+    run_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/writing-runs", headers=headers,
+        json={"chapter_brief_id": brief_id})
+    run_id = run_resp.json()["data"]["id"]
+
+    resp = await client.get(
+        f"/api/v1/novels/{novel_id}/writing-runs/{run_id}/repairs", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert "repair_logs" in data
+    assert "pending_repairs" in data
