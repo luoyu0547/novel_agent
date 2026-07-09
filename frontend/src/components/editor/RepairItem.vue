@@ -103,7 +103,7 @@ async function handleDismiss() {
       <el-button
         size="small"
         type="primary"
-        :disabled="(pending.intent_type === 'choice' && selectedOption === null) || (pending.intent_type === 'freeform' && !intentText.trim())"
+        :disabled="(pending.intent_type === 'choice' && selectedOption === undefined) || (pending.intent_type === 'freeform' && !intentText.trim())"
         :loading="processing"
         @click="handleApply"
       >

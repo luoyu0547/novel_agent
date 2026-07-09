@@ -80,6 +80,8 @@ class WritingRunOut(BaseModel):
     draft_content: str
     word_count: int
     gate_result_json: dict[str, Any]
+    gated: bool = False
+    has_pending_repairs: bool = False
     error_message: Optional[str] = None
     accepted_at: Optional[datetime] = None
     created_at: datetime
