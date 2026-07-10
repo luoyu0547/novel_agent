@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { useWritingStore } from '@/stores/writing'
+import { usePendingMemoryStore } from '@/stores/pendingMemory'
 import NovelWorkspaceTabs from '@/components/novels/NovelWorkspaceTabs.vue'
 import type { ChapterBrief, WritingRun } from '@/types/writing'
 
 const route = useRoute()
 const store = useWritingStore()
+const pendingMemoryStore = usePendingMemoryStore()
 const novelId = Number(route.params.id)
 
 const authorInput = ref('')
@@ -19,6 +21,9 @@ const latestDraftBlueprint = computed(() =>
 const editingTargetWords = ref(3000)
 const editingMinWords = ref(2000)
 const editingMaxWords = ref(5000)
+
+const pendingCountAfterAccept = ref(0)
+const extractionError = ref<string | null>(null)
 
 const activeRun = computed<WritingRun | null>(() =>
   store.writingRuns.find(r => r.status === 'completed' || r.status === 'failed') || null,
@@ -82,8 +87,13 @@ async function handleGenerateDraft() {
 
 async function handleAcceptRun(runId: number) {
   try {
-    await store.acceptRun(novelId, runId)
+    const result = await store.acceptRun(novelId, runId)
+    pendingCountAfterAccept.value = result.extraction.pending_count
+    extractionError.value = result.extraction.error
     ElMessage.success('草稿已接受并写入章节')
+    if (result.extraction.pending_count > 0) {
+      await pendingMemoryStore.fetchMemories(novelId)
+    }
   } catch {
     ElMessage.error('接受失败')
   }
@@ -240,6 +250,17 @@ async function saveBlueprint(bpId: number) {
             <el-button type="primary" @click="handleAcceptRun(activeRun.id)">接受到章节</el-button>
             <el-button @click="handleDiscardRun(activeRun.id)">废弃</el-button>
           </div>
+          <div v-if="pendingCountAfterAccept > 0" class="writing__extraction-info">
+            <el-tag type="warning" class="writing__pending-tag">
+              已提取 {{ pendingCountAfterAccept }} 条待确认记忆
+            </el-tag>
+            <el-button size="small" @click="$router.push(`/novels/${novelId}/pending`)">
+              查看并确认
+            </el-button>
+          </div>
+          <div v-else-if="extractionError" class="writing__extraction-info">
+            <el-tag type="danger">记忆提取失败：{{ extractionError }}</el-tag>
+          </div>
         </div>
         <div v-else-if="activeRun && activeRun.status === 'failed'">
           <el-alert type="error" :closable="false" title="生成失败" :description="activeRun.error_message || '字数未达标或内容为大纲体'" />
@@ -320,5 +341,16 @@ async function saveBlueprint(bpId: number) {
 .writing__reason {
   color: #e6a23c;
   font-size: 13px;
+}
+
+.writing__extraction-info {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.writing__pending-tag {
+  cursor: default;
 }
 </style>

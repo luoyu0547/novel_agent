@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.service import NovelExtractionService
+from app.ai.service import DeepSeekExtractionService
 from app.core.database import get_db
 from app.core.exceptions import NotFound
 from app.core.response import ApiResponse
@@ -18,7 +18,7 @@ from app.services.novel_service import NovelService
 
 router = APIRouter(prefix="/novels/{novel_id}", tags=["AI"])
 
-extraction_service = NovelExtractionService()
+extraction_service = DeepSeekExtractionService()
 
 
 @router.post("/chapters/{chapter_id}/extract")

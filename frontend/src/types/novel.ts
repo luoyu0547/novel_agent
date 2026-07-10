@@ -49,6 +49,15 @@ export interface ChapterOut {
   updated_at: string
 }
 
+export interface AcceptWritingRunResponse {
+  chapter: ChapterOut
+  extraction: {
+    pending_ids: number[]
+    pending_count: number
+    error: string | null
+  }
+}
+
 export interface NovelOut extends NovelListItem {
   chapters?: ChapterOut[]
 }

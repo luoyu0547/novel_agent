@@ -1,6 +1,6 @@
 import client from './client'
 import type { NovelBlueprint, ChapterPlan, ChapterBrief, ContextPackage, WritingRun, RepairsResponse } from '@/types/writing'
-import type { ChapterOut } from '@/types/novel'
+import type { AcceptWritingRunResponse } from '@/types/novel'
 
 export function generateBlueprint(novelId: number, authorInput: string): Promise<NovelBlueprint> {
   return client.post(`/novels/${novelId}/blueprints/generate`, { author_input: authorInput })
@@ -50,7 +50,7 @@ export function getWritingRun(novelId: number, runId: number): Promise<WritingRu
   return client.get(`/novels/${novelId}/writing-runs/${runId}`)
 }
 
-export function acceptWritingRun(novelId: number, runId: number): Promise<ChapterOut> {
+export function acceptWritingRun(novelId: number, runId: number): Promise<AcceptWritingRunResponse> {
   return client.put(`/novels/${novelId}/writing-runs/${runId}/accept`)
 }
 
