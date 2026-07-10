@@ -145,6 +145,7 @@ class ContextPackageService:
                         "title": c.title,
                         "content": c.content,
                         "summary": c.summary,
+                        "status": c.status,
                     }
                     for c in locked_chapters
                 ],

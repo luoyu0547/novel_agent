@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.ai.plot_planning import ConflictOutput
 from app.ai.writer import BaseWritingGenerator, FakePhase3WritingGenerator
 from app.core.exceptions import BadRequest, NotFound
 from app.models.novel import Novel
@@ -214,6 +215,41 @@ class PlotPlanningService:
         await self.db.commit()
         await self.db.refresh(revision)
         return revision
+
+    async def create_decision_from_conflict(
+        self,
+        conflict: ConflictOutput,
+        source: str,
+        run_id: int,
+    ) -> PlanningDecision:
+        await self._ensure_owned_novel()
+        from app.repositories.writing_repo import WritingRunRepo
+        run_repo = WritingRunRepo(self.db)
+        run = await run_repo.get_by_id(run_id)
+        snapshot = run.context_snapshot_json or {} if run else {}
+        plot_plan_revision_id = snapshot.get("plot_plan_revision_id")
+        plot_unit_id = None
+        if plot_plan_revision_id:
+            plan_revision = await self.repo.get_plan_revision(plot_plan_revision_id, self.novel_id)
+            if plan_revision:
+                plot_unit_id = plan_revision.plot_unit_id
+        decision = await self.repo.create_decision(self.novel_id, {
+            "plot_unit_id": plot_unit_id,
+            "plot_plan_revision_id": plot_plan_revision_id,
+            "writing_run_id": run_id,
+            "source": source,
+            "status": "pending",
+            "conflict_summary": conflict.core_conflict,
+            "evidence_json": conflict.evidence or {},
+            "options_json": [
+                {"label": o.label, "action": o.action, "consequence": o.consequence}
+                for o in conflict.options
+            ],
+            "recommended_index": conflict.recommended_index,
+            "recommendation_reason": conflict.recommendation_reason,
+            "impact_scope_json": conflict.impact_scope,
+        })
+        return decision
 
     async def list_pending_decisions(self) -> list[PlanningDecision]:
         await self._ensure_owned_novel()

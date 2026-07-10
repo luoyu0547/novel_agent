@@ -11,7 +11,9 @@ from app.schemas.writing import (
     BlueprintGenerateRequest,
     BlueprintUpdateRequest,
     ChapterPlanUpdateRequest,
+    ChapterBriefGenerateRequest,
     ChapterBriefUpdateRequest,
+    ContextPackageGenerateRequest,
     WritingRunCreateRequest,
     NovelBlueprintOut,
     ChapterPlanOut,
@@ -118,15 +120,16 @@ async def update_chapter_plan(
 @router.post("/chapter-briefs/generate")
 async def generate_chapter_brief(
     novel_id: int,
-    body: dict,
+    body: ChapterBriefGenerateRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     svc = _get_service(db, current_user, novel_id)
-    plan_id = body.get("chapter_plan_id")
-    if not plan_id:
-        raise AppException("缺少 chapter_plan_id")
-    brief = await svc.generate_chapter_brief(plan_id)
+    brief = await svc.generate_chapter_brief(
+        body.chapter_plan_id,
+        body.plot_plan_revision_id,
+        body.author_input or "",
+    )
     return ApiResponse.success(data=ChapterBriefOut.model_validate(brief).model_dump())
 
 
@@ -150,15 +153,16 @@ async def update_chapter_brief(
 @router.post("/context-packages/generate")
 async def generate_context_package(
     novel_id: int,
-    body: dict,
+    body: ContextPackageGenerateRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     svc = _get_service(db, current_user, novel_id)
-    brief_id = body.get("chapter_brief_id")
-    if not brief_id:
-        raise AppException("缺少 chapter_brief_id")
-    package = await svc.generate_context_package(brief_id)
+    package = await svc.generate_context_package(
+        body.chapter_brief_id,
+        body.plot_plan_revision_id,
+        body.author_input or "",
+    )
     return ApiResponse.success(data=ContextPackageOut.model_validate(package).model_dump())
 
 
@@ -173,7 +177,12 @@ async def create_writing_run(
     db: AsyncSession = Depends(get_db),
 ):
     svc = _get_service(db, current_user, novel_id)
-    run = await svc.create_writing_run(body.chapter_brief_id, body.context_package_id)
+    run = await svc.create_writing_run(
+        body.chapter_brief_id,
+        body.context_package_id,
+        body.plot_plan_revision_id,
+        body.author_input or "",
+    )
     return ApiResponse.success(data=WritingRunOut.model_validate(run).model_dump())
 
 

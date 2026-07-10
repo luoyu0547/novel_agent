@@ -6,6 +6,7 @@ from app.ai.plot_planning import (
     DecisionOption,
     DraftGenerationOutput,
 )
+from app.ai.quality_gate import FakeQualityGateAgent
 from app.ai.writer import FakePhase3WritingGenerator
 from app.core.exceptions import NotFound
 from app.models.novel import Novel, Chapter
@@ -19,6 +20,7 @@ from app.models.plot_planning import (
 from app.models.user import User
 from app.models.writing import ChapterPlan, ChapterBrief
 from app.schemas.plot_planning import ChooseDecisionRequest
+from app.services.writing_service import WritingService
 
 
 @pytest.mark.asyncio
@@ -373,3 +375,117 @@ async def test_context_contains_only_locked_chapters_and_plan_snapshot(db):
     assert "候选正文" not in str(context["published_canon"])
     assert context["snapshot"]["plot_plan_revision_id"] == 1
     assert context["author_input"] == "本次让调查转向码头"
+
+
+class RecordingPhase3WritingGenerator(FakePhase3WritingGenerator):
+    def __init__(self):
+        super().__init__()
+        self.last_context = None
+
+    async def generate_draft_result(self, context_package):
+        self.last_context = context_package
+        return await super().generate_draft_result(context_package)
+
+
+def decision_required_result():
+    return DraftGenerationOutput(
+        status="decision_required",
+        draft="不越过冲突点的部分正文",
+        conflict=ConflictOutput(
+            source="during_generation",
+            core_conflict="冲突",
+            options=[
+                DecisionOption(label="补充因果", action="supplement", consequence="保留事实"),
+                DecisionOption(label="改写未来", action="rewrite_future", consequence="延后揭示"),
+            ],
+            recommended_index=0,
+            recommendation_reason="最小影响",
+            impact_scope={"type": "scene"},
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_phase3_writing_run_passes_plan_and_locked_canon_to_generator(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说", description="描述", genre="推理", style_guide="克制冷调")
+    db.add(novel)
+    locked = Chapter(id=1, novel_id=1, title="已发布章", content="不可修改内容", status="locked")
+    draft_ch = Chapter(id=2, novel_id=1, title="未发布章", content="可修改内容", status="draft")
+    db.add_all([locked, draft_ch])
+    chapter_plan = ChapterPlan(id=1, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(chapter_plan)
+    brief = ChapterBrief(id=1, novel_id=1, chapter_plan_id=1, brief_json={"writing_goal": "测试"}, length_contract_json={"target_words": 10, "min_words": 1, "max_words": 100}, status="ready")
+    db.add(brief)
+    foundation = AuthorFoundation(id=1, novel_id=1, outline="大纲", current_intent="意图", stage_goal="阶段目标", constraints_json={}, version=1)
+    db.add(foundation)
+    await db.flush()
+    revision = AuthorFoundationRevision(id=1, novel_id=1, foundation_id=1, version=1, snapshot_json={"outline": "大纲"}, change_reason="initial")
+    db.add(revision)
+    await db.flush()
+    unit = PlotUnit(id=1, novel_id=1, title="单元", scope_type="volume", start_position=1, end_position=5, foundation_revision_id=1)
+    db.add(unit)
+    await db.flush()
+    plot_plan = PlotPlanRevision(
+        id=1, novel_id=1, plot_unit_id=1, foundation_revision_id=1, version=1,
+        plan_json={"core_conflict": "冲突"}, status="active",
+    )
+    db.add(plot_plan)
+    await db.commit()
+
+    generator = RecordingPhase3WritingGenerator()
+    service = WritingService(db=db, user_id=1, novel_id=1, generator=generator, gate_agent=FakeQualityGateAgent())
+    run = await service.create_writing_run(
+        brief_id=1,
+        plot_plan_revision_id=1,
+        author_input="本次必须让证人活着离开",
+    )
+    assert run.status == "completed"
+    assert generator.last_context["snapshot"]["plot_plan_revision_id"] == 1
+    assert generator.last_context["author_input"] == "本次必须让证人活着离开"
+    chapter_statuses = [item["status"] for item in generator.last_context["published_canon"]["chapters"]]
+    assert chapter_statuses == ["locked"]
+    assert run.context_snapshot_json["foundation_revision_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_decision_required_preserves_partial_unpublished_draft(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说", description="描述", genre="推理", style_guide="克制冷调")
+    db.add(novel)
+    locked = Chapter(id=1, novel_id=1, title="已锁定章", content="不可修改内容", status="locked")
+    draft_ch = Chapter(id=2, novel_id=1, title="未发布章", content="可修改内容", status="draft")
+    db.add_all([locked, draft_ch])
+    chapter_plan = ChapterPlan(id=1, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(chapter_plan)
+    brief = ChapterBrief(id=1, novel_id=1, chapter_plan_id=1, brief_json={"writing_goal": "测试"}, length_contract_json={"target_words": 10, "min_words": 1, "max_words": 100}, status="ready")
+    db.add(brief)
+    foundation = AuthorFoundation(id=1, novel_id=1, outline="大纲", current_intent="意图", stage_goal="阶段目标", constraints_json={}, version=1)
+    db.add(foundation)
+    await db.flush()
+    revision = AuthorFoundationRevision(id=1, novel_id=1, foundation_id=1, version=1, snapshot_json={"outline": "大纲"}, change_reason="initial")
+    db.add(revision)
+    await db.flush()
+    unit = PlotUnit(id=1, novel_id=1, title="单元", scope_type="volume", start_position=1, end_position=5, foundation_revision_id=1)
+    db.add(unit)
+    await db.flush()
+    plot_plan = PlotPlanRevision(
+        id=1, novel_id=1, plot_unit_id=1, foundation_revision_id=1, version=1,
+        plan_json={"core_conflict": "冲突"}, status="active",
+    )
+    db.add(plot_plan)
+    await db.commit()
+
+    generator = FakePhase3WritingGenerator(draft_result=decision_required_result())
+    service = WritingService(db=db, user_id=1, novel_id=1, generator=generator, gate_agent=FakeQualityGateAgent())
+    run = await service.create_writing_run(brief_id=1, plot_plan_revision_id=1)
+    assert run.status == "decision_required"
+    assert run.planning_blocked is True
+    assert run.decision_id is not None
+    assert run.draft_content == "不越过冲突点的部分正文"
+    ch_locked = await db.get(Chapter, 1)
+    assert ch_locked is not None and ch_locked.status == "locked"
+    ch_draft = await db.get(Chapter, 2)
+    assert ch_draft is not None and ch_draft.status == "draft"

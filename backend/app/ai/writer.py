@@ -139,6 +139,14 @@ class FakePhase3WritingGenerator(BaseWritingGenerator):
             draft="边境的风裹挟着沙砾扑面而来。",
         )
 
+    async def generate_draft(self, context_package: dict) -> str:
+        paragraph = (
+            "边境的风裹挟着沙砾扑面而来，城墙上的旗帜在黄昏中猎猎作响。"
+            "主角站在垛口边，目光越过荒原望向远方。"
+            "那个方向传来消息已经三天了——没有人知道那意味着什么。"
+        )
+        return (paragraph + "\n\n") * 20
+
     async def review_draft(self, context_package: dict, draft: str) -> DraftReviewOutput:
         if self._review is not None:
             return self._review

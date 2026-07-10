@@ -143,17 +143,35 @@ class WritingService:
 
     # ---- Chapter Brief ----
 
-    async def generate_chapter_brief(self, plan_id: int) -> ChapterBrief:
+    async def generate_chapter_brief(
+        self,
+        plan_id: int,
+        plot_plan_revision_id: Optional[int] = None,
+        author_input: str = "",
+    ) -> ChapterBrief:
         novel = await self._ensure_owned_novel()
         plan = await self.plan_repo.get_by_id(plan_id)
         if not plan or plan.novel_id != self.novel_id:
             raise NotFound("章节计划不存在")
+        if plot_plan_revision_id is not None:
+            from app.repositories.plot_planning_repo import PlotPlanningRepo
+            repo = PlotPlanningRepo(self.db)
+            revision = await repo.get_plan_revision(plot_plan_revision_id, self.novel_id)
+            if not revision:
+                raise NotFound("剧情计划修订不存在")
+            if revision.status != "active":
+                raise AppException("剧情计划修订必须为 active 状态")
         blueprint = await self.blueprint_repo.get_active(self.novel_id)
         blueprint_data = blueprint.content_json if blueprint else {}
         brief_content = await self.generator.generate_chapter_brief(plan.content_json, blueprint_data, DEFAULT_LENGTH_CONTRACT)
+        meta = dict(brief_content)
+        if plot_plan_revision_id is not None:
+            meta["_plot_plan_revision_id"] = plot_plan_revision_id
+            if author_input:
+                meta["_author_input"] = author_input
         result = await self.brief_repo.create(self.novel_id, {
             "chapter_plan_id": plan_id,
-            "brief_json": brief_content,
+            "brief_json": meta,
             "length_contract_json": dict(DEFAULT_LENGTH_CONTRACT),
             "status": "ready",
         })
@@ -171,12 +189,22 @@ class WritingService:
 
     # ---- Context Package ----
 
-    async def generate_context_package(self, brief_id: int) -> ContextPackage:
+    async def generate_context_package(
+        self,
+        brief_id: int,
+        plot_plan_revision_id: Optional[int] = None,
+        author_input: str = "",
+    ) -> ContextPackage:
         novel = await self._ensure_owned_novel()
         brief = await self.brief_repo.get_by_id(brief_id)
         if not brief or brief.novel_id != self.novel_id:
             raise NotFound("章节任务书不存在")
-        orchestrated = await self._build_context_package(novel, brief)
+        if plot_plan_revision_id is not None:
+            from app.services.context_package_service import ContextPackageService
+            ctx_svc = ContextPackageService(self.db, self.user_id, self.novel_id)
+            orchestrated = await ctx_svc.build_for_brief(brief_id, plot_plan_revision_id, author_input)
+        else:
+            orchestrated = await self._build_context_package(novel, brief)
         result = await self.context_repo.create(self.novel_id, {
             "chapter_brief_id": brief_id,
             "package_json": orchestrated,
@@ -216,12 +244,28 @@ class WritingService:
 
     # ---- Writing Run ----
 
-    async def create_writing_run(self, brief_id: int, context_package_id: Optional[int] = None) -> WritingRun:
+    async def create_writing_run(
+        self,
+        brief_id: int,
+        context_package_id: Optional[int] = None,
+        plot_plan_revision_id: Optional[int] = None,
+        author_input: str = "",
+    ) -> WritingRun:
         novel = await self._ensure_owned_novel()
         brief = await self.brief_repo.get_by_id(brief_id)
         if not brief or brief.novel_id != self.novel_id:
             raise NotFound("章节任务书不存在")
-        if context_package_id:
+
+        # --- Build context package ---
+        if plot_plan_revision_id is not None:
+            from app.services.context_package_service import ContextPackageService
+            ctx_svc = ContextPackageService(self.db, self.user_id, self.novel_id)
+            package = await ctx_svc.build_for_brief(brief_id, plot_plan_revision_id, author_input)
+            context_package = await self.context_repo.create(self.novel_id, {
+                "chapter_brief_id": brief_id,
+                "package_json": package,
+            })
+        elif context_package_id:
             context_package = await self.context_repo.get_by_id(context_package_id)
             if not context_package or context_package.novel_id != self.novel_id:
                 raise NotFound("上下文包不存在")
@@ -229,66 +273,163 @@ class WritingService:
         else:
             package = await self._build_context_package(novel, brief)
             context_package = await self.context_repo.create(self.novel_id, {"chapter_brief_id": brief_id, "package_json": package})
+
         run = await self.run_repo.create(self.novel_id, {
             "chapter_brief_id": brief_id,
             "context_package_id": context_package.id,
             "status": "running",
         })
-        try:
-            draft = await self.generator.generate_draft(package)
-            word_count = self._count_words(draft)
-            gate_result = self._check_gate(draft, word_count, brief.length_contract_json)
-            if not gate_result["passed"]:
-                package_with_hint = dict(package)
-                hints = []
-                if word_count < brief.length_contract_json.get("min_words", 2000):
-                    hints.append("草稿字数不足，请扩写场景过程、角色反应和冲突升级")
-                if gate_result.get("outline_like"):
-                    hints.append("草稿像大纲，请写出完整正文")
-                if hints:
-                    package_with_hint["expansion_hint"] = "；".join(hints)
-                draft = await self.generator.generate_draft(package_with_hint)
-                word_count = self._count_words(draft)
-                gate_result = self._check_gate(draft, word_count, brief.length_contract_json)
+        if plot_plan_revision_id is not None:
+            run.context_snapshot_json = package.get("snapshot", {})
+            await self.db.flush()
 
-            # --- Quality Gate (with auto-fix retry loop, max 3 iterations) ---
-            run.draft_content = draft
-            run.word_count = word_count
-            run.gate_result_json = gate_result
-            gate_svc = QualityGateService(db=self.db, agent=self.gate_agent)
-            gate_svc_result = {
-                "gated": False,
-                "has_pending_repairs": False,
-                "rewrite_needed": False,
-                "snapshot": gate_result,
-            }
-            max_iterations = 3
-            for retry in range(max_iterations):
-                gate_svc_result = await gate_svc.run(run, brief.brief_json, package)
-                run.gate_result_json = gate_svc_result.get("snapshot", run.gate_result_json)
-                if not gate_svc_result.get("rewrite_needed"):
-                    break
-                # Regenerate for the next gate check, unless this is the last
-                # allowed iteration (stop after 3 gate checks / 2 rewrites).
-                if retry < max_iterations - 1:
-                    feedback = await self._collect_gate_feedback(run.id)
-                    package_with_feedback = dict(package)
-                    package_with_feedback["gate_feedback"] = feedback
-                    await self._cleanup_gate_records(run.id)
-                    draft = await self.generator.generate_draft(package_with_feedback)
+        try:
+            if plot_plan_revision_id is not None:
+                # --- Phase 3: structured generation ---
+                result = await self.generator.generate_draft_result(package)
+
+                if result.status == "draft_ready":
+                    draft = result.draft
                     word_count = self._count_words(draft)
+                    gate_result = self._check_gate(draft, word_count, brief.length_contract_json)
+
+                    if not gate_result["passed"]:
+                        package_with_hint = dict(package)
+                        hints = []
+                        if word_count < brief.length_contract_json.get("min_words", 2000):
+                            hints.append("草稿字数不足，请扩写场景过程、角色反应和冲突升级")
+                        if gate_result.get("outline_like"):
+                            hints.append("草稿像大纲，请写出完整正文")
+                        if hints:
+                            package_with_hint["expansion_hint"] = "；".join(hints)
+                        draft = await self.generator.generate_draft(package_with_hint)
+                        word_count = self._count_words(draft)
+                        gate_result = self._check_gate(draft, word_count, brief.length_contract_json)
+
                     run.draft_content = draft
                     run.word_count = word_count
-            # ---
+                    run.gate_result_json = gate_result
+                    gate_svc = QualityGateService(db=self.db, agent=self.gate_agent)
+                    gate_svc_result = {
+                        "gated": False,
+                        "has_pending_repairs": False,
+                        "rewrite_needed": False,
+                        "snapshot": gate_result,
+                    }
+                    max_iterations = 3
+                    for retry in range(max_iterations):
+                        gate_svc_result = await gate_svc.run(run, brief.brief_json, package)
+                        run.gate_result_json = gate_svc_result.get("snapshot", run.gate_result_json)
+                        if not gate_svc_result.get("rewrite_needed"):
+                            break
+                        if retry < max_iterations - 1:
+                            feedback = await self._collect_gate_feedback(run.id)
+                            package_with_feedback = dict(package)
+                            package_with_feedback["gate_feedback"] = feedback
+                            await self._cleanup_gate_records(run.id)
+                            draft = await self.generator.generate_draft(package_with_feedback)
+                            word_count = self._count_words(draft)
+                            run.draft_content = draft
+                            run.word_count = word_count
 
-            run = await self.run_repo.update(run, {
-                "draft_content": draft,
-                "word_count": word_count,
-                "gate_result_json": gate_svc_result.get("snapshot", gate_result),
-                "gated": gate_svc_result.get("gated", False),
-                "has_pending_repairs": gate_svc_result.get("has_pending_repairs", False),
-                "status": "completed",
-            })
+                    run = await self.run_repo.update(run, {
+                        "draft_content": draft,
+                        "word_count": word_count,
+                        "gate_result_json": gate_svc_result.get("snapshot", gate_result),
+                        "gated": gate_svc_result.get("gated", False),
+                        "has_pending_repairs": gate_svc_result.get("has_pending_repairs", False),
+                        "status": "completed",
+                    })
+
+                elif result.status == "decision_required":
+                    from app.services.plot_planning_service import PlotPlanningService
+                    from app.repositories.plot_planning_repo import PlotPlanningRepo
+
+                    pp_svc = PlotPlanningService(self.db, self.user_id, self.novel_id, generator=self.generator)
+                    decision = await pp_svc.create_decision_from_conflict(result.conflict, "during_generation", run.id)
+
+                    pp_repo = PlotPlanningRepo(self.db)
+                    await pp_repo.create_draft_revision(self.novel_id, {
+                        "writing_run_id": run.id,
+                        "decision_id": decision.id,
+                        "base_content": result.draft,
+                        "candidate_content": result.draft,
+                        "scope_json": result.conflict.impact_scope if result.conflict else {},
+                        "diff_json": {},
+                        "reason": f"决策等待: {result.conflict.core_conflict}" if result.conflict else "",
+                        "status": "candidate",
+                    })
+
+                    run = await self.run_repo.update(run, {
+                        "draft_content": result.draft,
+                        "word_count": self._count_words(result.draft),
+                        "status": "decision_required",
+                        "planning_blocked": True,
+                        "decision_id": decision.id,
+                    })
+
+                elif result.status == "unsafe_planning":
+                    run = await self.run_repo.update(run, {
+                        "status": "failed",
+                        "error_message": result.unsafe_reason or "不安全的规划方案",
+                    })
+
+            else:
+                # --- Phase 1/2: existing flow ---
+                draft = await self.generator.generate_draft(package)
+                word_count = self._count_words(draft)
+                gate_result = self._check_gate(draft, word_count, brief.length_contract_json)
+                if not gate_result["passed"]:
+                    package_with_hint = dict(package)
+                    hints = []
+                    if word_count < brief.length_contract_json.get("min_words", 2000):
+                        hints.append("草稿字数不足，请扩写场景过程、角色反应和冲突升级")
+                    if gate_result.get("outline_like"):
+                        hints.append("草稿像大纲，请写出完整正文")
+                    if hints:
+                        package_with_hint["expansion_hint"] = "；".join(hints)
+                    draft = await self.generator.generate_draft(package_with_hint)
+                    word_count = self._count_words(draft)
+                    gate_result = self._check_gate(draft, word_count, brief.length_contract_json)
+
+                # --- Quality Gate (with auto-fix retry loop, max 3 iterations) ---
+                run.draft_content = draft
+                run.word_count = word_count
+                run.gate_result_json = gate_result
+                gate_svc = QualityGateService(db=self.db, agent=self.gate_agent)
+                gate_svc_result = {
+                    "gated": False,
+                    "has_pending_repairs": False,
+                    "rewrite_needed": False,
+                    "snapshot": gate_result,
+                }
+                max_iterations = 3
+                for retry in range(max_iterations):
+                    gate_svc_result = await gate_svc.run(run, brief.brief_json, package)
+                    run.gate_result_json = gate_svc_result.get("snapshot", run.gate_result_json)
+                    if not gate_svc_result.get("rewrite_needed"):
+                        break
+                    # Regenerate for the next gate check, unless this is the last
+                    # allowed iteration (stop after 3 gate checks / 2 rewrites).
+                    if retry < max_iterations - 1:
+                        feedback = await self._collect_gate_feedback(run.id)
+                        package_with_feedback = dict(package)
+                        package_with_feedback["gate_feedback"] = feedback
+                        await self._cleanup_gate_records(run.id)
+                        draft = await self.generator.generate_draft(package_with_feedback)
+                        word_count = self._count_words(draft)
+                        run.draft_content = draft
+                        run.word_count = word_count
+                # ---
+
+                run = await self.run_repo.update(run, {
+                    "draft_content": draft,
+                    "word_count": word_count,
+                    "gate_result_json": gate_svc_result.get("snapshot", gate_result),
+                    "gated": gate_svc_result.get("gated", False),
+                    "has_pending_repairs": gate_svc_result.get("has_pending_repairs", False),
+                    "status": "completed",
+                })
         except Exception as e:
             logger.exception("WritingRun failed")
             run = await self.run_repo.update(run, {
@@ -326,6 +467,8 @@ class WritingService:
             raise NotFound("写作运行不存在")
         if run.status in ("accepted", "discarded"):
             raise AppException("该写作运行已处理")
+        if run.status == "decision_required":
+            raise AppException("该写作运行存在待处理决策，请先解决决策")
         if run.status != "completed":
             raise AppException("只能接受已完成的写作运行")
         if run.target_chapter_id:

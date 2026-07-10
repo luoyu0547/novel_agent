@@ -55,9 +55,21 @@ class ChapterBriefOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ChapterBriefGenerateRequest(BaseModel):
+    chapter_plan_id: int
+    plot_plan_revision_id: Optional[int] = None
+    author_input: Optional[str] = None
+
+
 class ChapterBriefUpdateRequest(BaseModel):
     brief_json: Optional[dict[str, Any]] = None
     length_contract_json: Optional[dict[str, Any]] = None
+
+
+class ContextPackageGenerateRequest(BaseModel):
+    chapter_brief_id: int
+    plot_plan_revision_id: Optional[int] = None
+    author_input: Optional[str] = None
 
 
 class ContextPackageOut(BaseModel):
@@ -96,6 +108,8 @@ class WritingRunOut(BaseModel):
 class WritingRunCreateRequest(BaseModel):
     chapter_brief_id: int
     context_package_id: Optional[int] = None
+    plot_plan_revision_id: Optional[int] = None
+    author_input: Optional[str] = None
 
 
 class RepairLogOut(BaseModel):
