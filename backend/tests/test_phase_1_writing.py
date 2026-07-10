@@ -278,7 +278,7 @@ async def test_writing_run_full_flow(client, novel_and_headers):
             headers=headers,
         )
         assert accept_resp.status_code == 200
-        assert accept_resp.json()["data"]["content"] == run["draft_content"]
+        assert accept_resp.json()["data"]["chapter"]["content"] == run["draft_content"]
 
 
 @pytest.mark.asyncio

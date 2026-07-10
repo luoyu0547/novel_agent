@@ -953,3 +953,220 @@ async def test_update_foundation_supersedes_pending_decisions(db):
     superseded = [d for d in decisions if d.status == "superseded"]
     assert len(superseded) == 1
     assert superseded[0].id == decision.id
+
+
+# ===== Task 8: E2E scenario test =====
+
+
+@pytest.mark.asyncio
+async def test_phase3_e2e_full_scenario(client, novel_and_headers, db):
+    from app.services.writing_service import WritingService
+    from app.services.plot_planning_service import PlotPlanningService
+    from app.models.writing import ChapterPlan, ChapterBrief, WritingRun
+    from app.ai.plot_planning import LocalRevisionOutput
+
+    novel, headers = novel_and_headers
+    novel_id = novel["id"]
+
+    # 1. Set author foundation via API
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/author-foundation",
+        headers=headers,
+        json={
+            "outline": "作者已有第一卷大纲：主角在边城调查旧案",
+            "current_intent": "完成边城调查",
+            "stage_goal": "查清旧案并保护证人",
+            "constraints_json": {"tone": "克制"},
+        },
+    )
+    assert resp.status_code == 200
+
+    # 2. Create a locked chapter
+    await create_locked_chapter(client, novel_id, headers, "已发布的锁定事实")
+
+    # 3. Create plot unit via API
+    resp = await client.post(
+        f"/api/v1/novels/{novel_id}/plot-units",
+        headers=headers,
+        json={
+            "title": "第一卷", "scope_type": "volume",
+            "start_position": 1, "end_position": 5,
+            "author_goal": "查清旧案",
+        },
+    )
+    assert resp.status_code == 200
+    unit = resp.json()["data"]
+
+    # 4. Generate plan via API
+    resp = await client.post(
+        f"/api/v1/novels/{novel_id}/plot-units/{unit['id']}/plans/generate",
+        headers=headers,
+        json={"author_input": ""},
+    )
+    assert resp.status_code == 200
+    draft_plan = resp.json()["data"]
+    assert draft_plan["status"] == "draft"
+
+    # 5. Confirm plan via API
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/plot-units/{unit['id']}/plans/{draft_plan['id']}/confirm",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    active_plan = resp.json()["data"]
+    assert active_plan["status"] == "active"
+
+    # 6. Create chapter plan and brief via DB
+    cp = ChapterPlan(novel_id=novel_id, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(cp)
+    await db.flush()
+    brief = ChapterBrief(
+        novel_id=novel_id, chapter_plan_id=cp.id,
+        brief_json={"writing_goal": "完成本章剧情推进"},
+        length_contract_json={"target_words": 10, "min_words": 1, "max_words": 100},
+        status="ready",
+    )
+    db.add(brief)
+    await db.commit()
+
+    # 7. Writing run → completed
+    ws = WritingService(
+        db=db, user_id=1, novel_id=novel_id,
+        generator=FakePhase3WritingGenerator(),
+        gate_agent=FakeQualityGateAgent(),
+    )
+    run = await ws.create_writing_run(
+        brief_id=brief.id, plot_plan_revision_id=active_plan["id"],
+        author_input="本次必须让证人活着离开",
+    )
+    assert run.status == "completed"
+    assert run.context_snapshot_json["plot_plan_revision_id"] == active_plan["id"]
+
+    # 8. Writing run → decision_required
+    conflicting_ws = WritingService(
+        db=db, user_id=1, novel_id=novel_id,
+        generator=FakePhase3WritingGenerator(draft_result=decision_required_result()),
+        gate_agent=FakeQualityGateAgent(),
+    )
+    conflicting_run = await conflicting_ws.create_writing_run(
+        brief_id=brief.id, plot_plan_revision_id=active_plan["id"],
+    )
+    assert conflicting_run.status == "decision_required"
+    assert conflicting_run.decision_id is not None
+
+    # 9. Get decision
+    pp_svc = PlotPlanningService(db=db, user_id=1, novel_id=novel_id)
+    decision = await pp_svc.get_decision(conflicting_run.decision_id)
+    assert len(decision.options_json) in (2, 3)
+    assert decision.recommended_index is not None
+
+    # 10. Choose decision
+    original_unaffected = "不越过冲突点的部分正文"
+    revision_generator = FakePhase3WritingGenerator(
+        revision=LocalRevisionOutput(
+            candidate_content=f"开头不变。{original_unaffected}。结尾不变。",
+            scope={"type": "paragraph", "start": 2, "end": 2},
+            diff={"removed": ["旧"], "added": ["新"]},
+            plan_patch={"progression": [{"order": 1, "purpose": "调整"}]},
+            expanded_scope=False, expansion_reason="",
+        )
+    )
+    pp_svc_rev = PlotPlanningService(db=db, user_id=1, novel_id=novel_id, generator=revision_generator)
+    resolved_decision, new_plan, draft_revision, resolved_run = await pp_svc_rev.choose_decision(
+        decision.id, option_index=decision.recommended_index,
+    )
+    assert resolved_decision.status == "resolved"
+    assert draft_revision.status == "candidate"
+    assert original_unaffected in draft_revision.candidate_content
+    assert new_plan.version == active_plan["version"] + 1
+
+    # 11. Accept run (update status since choose_decision resolves but doesn't set completed)
+    await db.refresh(conflicting_run)
+    conflicting_run.status = "completed"
+    await db.flush()
+    chapter_obj, extraction = await conflicting_ws.accept_writing_run(conflicting_run.id)
+    assert chapter_obj.status == "draft"
+
+    # 12. Publish the chapter via API
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/chapters/{chapter_obj.id}/publish",
+        headers=headers, json={},
+    )
+    assert resp.status_code == 200
+    published = resp.json()["data"]
+    assert published["status"] == "locked"
+
+    # 13. Try to update locked chapter → 400
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/chapters/{published['id']}",
+        headers=headers, json={"content": "改写"},
+    )
+    assert resp.status_code == 400
+
+    # 14. Generate next chapter → context includes the new published chapter
+    from app.services.context_package_service import ContextPackageService
+    from app.core.database import async_session_factory
+    async with async_session_factory() as fresh_db:
+        ctx = await ContextPackageService(fresh_db, user_id=1, novel_id=novel_id).build_for_brief(
+            brief_id=brief.id, plot_plan_revision_id=active_plan["id"],
+        )
+    assert published["id"] in ctx["snapshot"]["published_chapter_ids"]
+
+
+# ===== Task 8: Exception path tests =====
+
+
+@pytest.mark.asyncio
+async def test_foundation_update_keeps_locked_content_unchanged(client, novel_and_headers, db):
+    novel, headers = novel_and_headers
+    novel_id = novel["id"]
+
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/author-foundation",
+        headers=headers,
+        json={"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
+    )
+    assert resp.status_code == 200
+
+    chapter = await create_locked_chapter(client, novel_id, headers, "不可修改的锁定内容")
+
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/author-foundation",
+        headers=headers,
+        json={"stage_goal": "全新目标"},
+    )
+    assert resp.status_code == 200
+
+    resp = await client.get(
+        f"/api/v1/novels/{novel_id}/chapters/{chapter['id']}",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["content"] == "不可修改的锁定内容"
+
+
+@pytest.mark.asyncio
+async def test_cross_user_planning_returns_404(client):
+    resp = await client.post("/api/v1/auth/register", json={"username": "e2e_a", "password": "password123"})
+    token_a = resp.json()["data"]["token"]
+    headers_a = {"Authorization": f"Bearer {token_a}"}
+
+    resp = await client.post("/api/v1/auth/register", json={"username": "e2e_b", "password": "password123"})
+    token_b = resp.json()["data"]["token"]
+    headers_b = {"Authorization": f"Bearer {token_b}"}
+
+    resp = await client.post("/api/v1/novels", headers=headers_a, json={"title": "A的小说"})
+    novel_a = resp.json()["data"]
+
+    resp = await client.get(f"/api/v1/novels/{novel_a['id']}/author-foundation", headers=headers_b)
+    assert resp.status_code == 404
+
+    resp = await client.post(
+        f"/api/v1/novels/{novel_a['id']}/plot-units",
+        headers=headers_b,
+        json={"title": "hack", "scope_type": "volume", "start_position": 1, "end_position": 1},
+    )
+    assert resp.status_code == 404
+
+    resp = await client.get(f"/api/v1/novels/{novel_a['id']}/plot-units", headers=headers_b)
+    assert resp.status_code == 404
