@@ -23,6 +23,7 @@ from app.schemas.writing import (
     ResolveRepairRequest,
 )
 from app.services.writing_service import WritingService
+from app.services.repair_service import RepairService
 
 router = APIRouter(prefix="/novels/{novel_id}", tags=["Writing"])
 
@@ -265,24 +266,12 @@ async def resolve_repair(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    svc = _get_service(db, current_user, novel_id)
-    await svc._ensure_owned_novel()
-    pending_repo = PendingRepairRepo(db)
-    repair = await pending_repo.get_by_id(repair_id)
-    if not repair or repair.novel_id != novel_id:
-        raise NotFound("修复项不存在")
-    if repair.status != "pending":
-        raise AppException("该修复项已处理")
-    if body.action == "apply":
-        await pending_repo.update_status(repair_id, "applied")
-    elif body.action == "dismiss":
-        await pending_repo.update_status(repair_id, "dismissed")
-    else:
-        raise AppException(f"不支持的动作: {body.action}")
-    await db.commit()
-    remaining = await pending_repo.list_pending_by_writing_run(repair.writing_run_id)
-    if not remaining:
-        run = await svc.get_writing_run(repair.writing_run_id)
-        run.has_pending_repairs = False
-        await db.commit()
+    svc = RepairService(db=db, user_id=current_user.id, novel_id=novel_id)
+    await svc.resolve(
+        novel_id=novel_id,
+        repair_id=repair_id,
+        action=body.action,
+        choice_index=body.choice_index,
+        intent_text=body.intent_text,
+    )
     return ApiResponse.success(message="修复项已处理")

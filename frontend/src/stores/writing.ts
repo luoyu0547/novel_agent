@@ -113,11 +113,17 @@ export const useWritingStore = defineStore('writing', () => {
     pendingRepairs.value = data.pending_repairs
   }
 
-  async function resolveRepair(novelId: number, repairId: number, payload: { action: 'apply' | 'dismiss'; choice_index?: number; intent_text?: string }) {
+  async function resolveRepair(novelId: number, repairId: number, payload: { action: 'apply' | 'dismiss'; choice_index?: number; intent_text?: string }, runId?: number) {
     await api.resolveRepair(novelId, repairId, payload)
-    pendingRepairs.value = pendingRepairs.value.map(r =>
-      r.id === repairId ? { ...r, status: 'applied' as const } : r,
-    )
+    const found = pendingRepairs.value.find(r => r.id === repairId)
+    const targetRunId = runId ?? found?.writing_run_id
+    if (targetRunId) {
+      const data = await api.getRepairs(novelId, targetRunId)
+      repairLogs.value = data.repair_logs
+      pendingRepairs.value = data.pending_repairs
+      const run = await api.getWritingRun(novelId, targetRunId)
+      writingRuns.value = writingRuns.value.map(r => (r.id === targetRunId ? run : r))
+    }
   }
 
   return {

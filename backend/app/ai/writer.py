@@ -24,6 +24,9 @@ class BaseWritingGenerator:
     async def generate_draft(self, context_package: dict) -> str:
         raise NotImplementedError
 
+    async def rewrite_fragment(self, draft: str, location: str, context: str, intent: Optional[str] = None) -> str:
+        raise NotImplementedError
+
 
 class FakeWritingGenerator(BaseWritingGenerator):
     async def generate_blueprint(self, novel_data: dict, author_input: str) -> dict:
@@ -73,6 +76,9 @@ class FakeWritingGenerator(BaseWritingGenerator):
             "那个方向传来消息已经三天了——没有人知道那意味着什么。"
         )
         return (paragraph + "\n\n") * 20
+
+    async def rewrite_fragment(self, draft: str, location: str, context: str, intent: Optional[str] = None) -> str:
+        return draft.replace(location, f"[{location}]", 1)
 
 
 class DeepSeekWritingGenerator(BaseWritingGenerator):
@@ -154,6 +160,27 @@ class DeepSeekWritingGenerator(BaseWritingGenerator):
 3. 不输出大纲、列表、总结或解释，只输出章节正文
 4. 如果篇幅不足，优先扩写场景过程和角色反应
 {('5. ' + expansion_hint) if expansion_hint else ''}"""
+        return await self._call_llm_text(prompt)
+
+    async def rewrite_fragment(self, draft: str, location: str, context: str, intent: Optional[str] = None) -> str:
+        prompt = f"""请根据以下要求重写小说正文的特定位置。
+
+原正文：
+{draft}
+
+需要重写的位置：{location}
+
+上下文信息：
+{context}
+
+作者意图：
+{intent or '请自行判断最佳方向'}
+
+要求：
+1. 只重写指定位置的内容，保持正文其他部分不变
+2. 根据作者意图调整该位置的措辞、语气和细节
+3. 直接输出完整的新正文，不要任何解释
+4. 不要改变正文的整体风格和叙事视角"""
         return await self._call_llm_text(prompt)
 
     async def _call_llm(self, prompt: str) -> dict:

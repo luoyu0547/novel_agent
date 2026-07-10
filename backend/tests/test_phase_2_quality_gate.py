@@ -642,3 +642,207 @@ async def test_writing_run_all_pass_no_rewrite(db):
     assert run.gated is True
     assert run.has_pending_repairs is False
     await db.rollback()
+
+
+# ---------------------------------------------------------------------------
+# Task 3: RepairService — apply intent to writing drafts
+# ---------------------------------------------------------------------------
+
+
+async def _seed_repair_setup(db):
+    """Create user, novel, and WritingRun for RepairService tests."""
+    from app.models.user import User
+    from app.models.novel import Novel
+    from app.models.writing import WritingRun
+
+    user = User(username="repair_tester", hashed_password="x")
+    db.add(user)
+    await db.flush()
+    novel = Novel(user_id=user.id, title="修复测试", description="", genre="古风", style_guide="第三人称")
+    db.add(novel)
+    await db.flush()
+    run = WritingRun(
+        novel_id=novel.id,
+        chapter_brief_id=1,
+        context_package_id=1,
+        status="completed",
+        draft_content="这是第一段。这是特定段落。这是最后一段。",
+        word_count=20,
+        has_pending_repairs=True,
+    )
+    db.add(run)
+    await db.flush()
+    return user.id, novel.id, run.id
+
+
+@pytest.mark.asyncio
+async def test_repair_service_apply_choice_rewrites_draft(db):
+    """apply with choice calls rewrite_fragment, updates WritingRun.draft_content, creates RepairLog."""
+    from app.services.repair_service import RepairService
+    from app.ai.writer import FakeWritingGenerator
+    from app.repositories.quality_gate_repo import PendingRepairRepo, RepairLogRepo
+    from app.models.writing import WritingRun
+
+    user_id, novel_id, run_id = await _seed_repair_setup(db)
+
+    pending_repo = PendingRepairRepo(db)
+    location = "特定段落"
+    repair = await pending_repo.create(novel_id, None, run_id, {
+        "issue_type": "character_choice",
+        "description": "角色抉择",
+        "location": location,
+        "context": "角色面临选择",
+        "options": [{"label": "方案A", "summary": "保持谨慎"}, {"label": "方案B", "summary": "表现果断"}],
+        "intent_type": "choice",
+    })
+    await db.commit()
+
+    gen = FakeWritingGenerator()
+    svc = RepairService(db=db, user_id=user_id, novel_id=novel_id, generator=gen)
+    result = await svc.resolve(novel_id, repair.id, "apply", choice_index=0)
+
+    assert result.status == "applied"
+
+    run = await db.get(WritingRun, run_id)
+    assert f"[{location}]" in run.draft_content
+
+    log_repo = RepairLogRepo(db)
+    logs = await log_repo.list_by_writing_run(run_id)
+    assert len(logs) == 1
+    assert logs[0].issue_type == "character_choice"
+    assert logs[0].location == location
+    assert logs[0].old_text == location
+    assert logs[0].new_text == f"[{location}]"
+
+    assert run.has_pending_repairs is False
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_repair_service_dismiss_leaves_draft_unchanged(db):
+    """dismiss leaves draft unchanged, marks repair dismissed."""
+    from app.services.repair_service import RepairService
+    from app.ai.writer import FakeWritingGenerator
+    from app.repositories.quality_gate_repo import PendingRepairRepo, RepairLogRepo
+    from app.models.writing import WritingRun
+
+    user_id, novel_id, run_id = await _seed_repair_setup(db)
+
+    pending_repo = PendingRepairRepo(db)
+    repair = await pending_repo.create(novel_id, None, run_id, {
+        "issue_type": "character_choice",
+        "description": "角色抉择",
+        "location": "某段落",
+        "context": "角色面临选择",
+        "intent_type": "choice",
+    })
+    await db.commit()
+
+    run_before = await db.get(WritingRun, run_id)
+    original_draft = run_before.draft_content
+
+    gen = FakeWritingGenerator()
+    svc = RepairService(db=db, user_id=user_id, novel_id=novel_id, generator=gen)
+    result = await svc.resolve(novel_id, repair.id, "dismiss")
+
+    assert result.status == "dismissed"
+
+    run_after = await db.get(WritingRun, run_id)
+    assert run_after.draft_content == original_draft
+
+    log_repo = RepairLogRepo(db)
+    logs = await log_repo.list_by_writing_run(run_id)
+    assert len(logs) == 0
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_resolve_repair_cross_novel_404(client, novel_and_headers, db):
+    """Cross-novel repair returns 404."""
+    from app.models.writing import WritingRun, PendingRepair
+
+    novel, headers = novel_and_headers
+    novel_id = novel["id"]
+
+    other_headers = await _register_headers(client, "cross_user_resolve")
+    other_resp = await client.post(
+        "/api/v1/novels",
+        headers=other_headers,
+        json={"title": "跨小说测试", "description": "", "genre": "古风"},
+    )
+    other_novel_id = other_resp.json()["data"]["id"]
+
+    run = WritingRun(
+        novel_id=other_novel_id,
+        chapter_brief_id=1,
+        context_package_id=1,
+        status="completed",
+        draft_content="其他小说草稿",
+        word_count=6,
+        has_pending_repairs=True,
+    )
+    db.add(run)
+    await db.flush()
+
+    repair = PendingRepair(
+        novel_id=other_novel_id,
+        writing_run_id=run.id,
+        issue_type="character_choice",
+        description="测试",
+        location="段落",
+        context="上下文",
+        intent_type="choice",
+        status="pending",
+    )
+    db.add(repair)
+    await db.commit()
+
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/writing/repairs/{repair.id}/resolve",
+        headers=headers,
+        json={"action": "apply", "choice_index": 0},
+    )
+    assert resp.status_code == 404
+    assert "修复项不存在" in resp.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_repair_already_resolved_400(client, novel_and_headers, db):
+    """Already resolved repair returns 400."""
+    from app.models.writing import WritingRun, PendingRepair
+
+    novel, headers = novel_and_headers
+    novel_id = novel["id"]
+
+    run = WritingRun(
+        novel_id=novel_id,
+        chapter_brief_id=1,
+        context_package_id=1,
+        status="completed",
+        draft_content="草稿正文",
+        word_count=4,
+        has_pending_repairs=True,
+    )
+    db.add(run)
+    await db.flush()
+
+    repair = PendingRepair(
+        novel_id=novel_id,
+        writing_run_id=run.id,
+        issue_type="character_choice",
+        description="已处理",
+        location="段落",
+        context="上下文",
+        intent_type="choice",
+        status="applied",
+    )
+    db.add(repair)
+    await db.commit()
+
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/writing/repairs/{repair.id}/resolve",
+        headers=headers,
+        json={"action": "apply"},
+    )
+    assert resp.status_code == 400
+    assert "已处理" in resp.json()["message"]
