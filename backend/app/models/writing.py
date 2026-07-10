@@ -74,6 +74,14 @@ class WritingRun(Base):
     has_pending_repairs: Mapped[bool] = mapped_column(default=False)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     accepted_at: Mapped[Optional[datetime.datetime]] = mapped_column(nullable=True)
+    mode: Mapped[str] = mapped_column(default="standard")
+    target_word_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    min_word_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_word_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    input_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    agent_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    self_check: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    plan_version_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now)
     updated_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now, onupdate=datetime.datetime.now)
 
@@ -97,7 +105,7 @@ class PendingRepair(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id"), nullable=False, index=True)
-    chapter_id: Mapped[int] = mapped_column(ForeignKey("chapters.id"), nullable=False)
+    chapter_id: Mapped[Optional[int]] = mapped_column(ForeignKey("chapters.id"), nullable=True)
     writing_run_id: Mapped[int] = mapped_column(ForeignKey("writing_runs.id"), nullable=False, index=True)
     issue_type: Mapped[str] = mapped_column(nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")

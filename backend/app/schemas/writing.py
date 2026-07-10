@@ -84,6 +84,14 @@ class WritingRunOut(BaseModel):
     has_pending_repairs: bool = False
     error_message: Optional[str] = None
     accepted_at: Optional[datetime] = None
+    mode: str = "standard"
+    target_word_count: int = 0
+    min_word_count: int = 0
+    max_word_count: int = 0
+    input_snapshot: dict[str, Any] = {}
+    agent_notes: str = ""
+    self_check: dict[str, Any] = {}
+    plan_version_ids: list[Any] = []
     created_at: datetime
     updated_at: datetime
 
@@ -112,7 +120,7 @@ class RepairLogOut(BaseModel):
 class PendingRepairOut(BaseModel):
     id: int
     novel_id: int
-    chapter_id: int
+    chapter_id: Optional[int] = None
     writing_run_id: int
     issue_type: str
     description: str

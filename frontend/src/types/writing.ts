@@ -90,8 +90,18 @@ export interface WritingRun {
     max_words: number
     outline_like: boolean
   }
+  gated: boolean
+  has_pending_repairs: boolean
   error_message: string | null
   accepted_at: string | null
+  mode: 'standard' | 'deep'
+  target_word_count: number
+  min_word_count: number
+  max_word_count: number
+  input_snapshot: Record<string, unknown>
+  agent_notes: string
+  self_check: Record<string, unknown>
+  plan_version_ids: number[]
   created_at: string
   updated_at: string
 }
@@ -116,7 +126,7 @@ export interface PendingRepairOption {
 export interface PendingRepair {
   id: number
   novel_id: number
-  chapter_id: number
+  chapter_id: number | null
   writing_run_id: number
   issue_type: string
   description: string

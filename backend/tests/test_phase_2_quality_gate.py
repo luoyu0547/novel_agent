@@ -38,6 +38,85 @@ async def novel_and_headers(client):
 
 
 @pytest.mark.asyncio
+async def test_writing_run_v2_extension_fields(db):
+    """WritingRun 支持 v2 扩展字段：mode、word counts、input_snapshot、agent_notes、self_check、plan_version_ids。"""
+    run = WritingRun(
+        novel_id=1,
+        chapter_brief_id=1,
+        context_package_id=1,
+        status="completed",
+        draft_content="test",
+        word_count=4,
+        mode="deep",
+        target_word_count=3000,
+        min_word_count=2000,
+        max_word_count=5000,
+        input_snapshot={"blueprint_version": 1, "volume_arc_id": 2},
+        agent_notes="自我评估：结构完整，节奏偏快",
+        self_check={"passed": True, "notes": "自查通过"},
+        plan_version_ids=[1, 2, 3],
+    )
+    db.add(run)
+    await db.flush()
+    result = await db.get(WritingRun, run.id)
+    assert result.mode == "deep"
+    assert result.target_word_count == 3000
+    assert result.min_word_count == 2000
+    assert result.max_word_count == 5000
+    assert result.input_snapshot == {"blueprint_version": 1, "volume_arc_id": 2}
+    assert result.agent_notes == "自我评估：结构完整，节奏偏快"
+    assert result.self_check == {"passed": True, "notes": "自查通过"}
+    assert result.plan_version_ids == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_writing_run_v2_default_values(db):
+    """WritingRun v2 扩展字段有合理默认值。"""
+    run = WritingRun(
+        novel_id=1,
+        chapter_brief_id=1,
+        context_package_id=1,
+        status="running",
+        draft_content="",
+        word_count=0,
+    )
+    db.add(run)
+    await db.flush()
+    result = await db.get(WritingRun, run.id)
+    assert result.mode == "standard"
+    assert result.target_word_count == 0
+    assert result.min_word_count == 0
+    assert result.max_word_count == 0
+    assert result.input_snapshot == {}
+    assert result.agent_notes == ""
+    assert result.self_check == {}
+    assert result.plan_version_ids == []
+
+
+@pytest.mark.asyncio
+async def test_pending_repair_nullable_chapter_id(db):
+    """PendingRepair.chapter_id 可为 None（草稿尚未被接受到真实章节时）。"""
+    repair = PendingRepair(
+        novel_id=1,
+        chapter_id=None,
+        writing_run_id=1,
+        issue_type="character_choice",
+        description="角色抉择方向",
+        location="第3段",
+        context="角色面临抉择的原文片段",
+        options=[{"label": "方案A", "summary": "果断"}],
+        intent_type="choice",
+        status="pending",
+    )
+    db.add(repair)
+    await db.flush()
+    result = await db.get(PendingRepair, repair.id)
+    assert result is not None
+    assert result.chapter_id is None
+    assert result.status == "pending"
+
+
+@pytest.mark.asyncio
 async def test_repair_log_creation(db):
     """RepairLog 可以创建和读取。"""
     log = RepairLog(
