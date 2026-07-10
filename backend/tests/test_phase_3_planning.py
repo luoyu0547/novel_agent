@@ -6,6 +6,9 @@ from app.models.planning import VolumeArc, PlanVersion, ReviewIssue
 from app.schemas.planning import VolumeArcOut, PlanVersionOut, ReviewIssueOut
 
 
+# ── Existing model/schema creation tests (unchanged) ──────────────────────
+
+
 @pytest.mark.asyncio
 async def test_volume_arc_creation(db):
     """VolumeArc 可以创建并读取所有字段。"""
@@ -233,3 +236,276 @@ async def test_review_issue_schema_serialization(db):
     assert out.severity == "auto_fixable"
     assert out.acceptance_blocking is False
     assert out.status == "resolved"
+
+
+# ── API integration tests ─────────────────────────────────────────────────
+
+
+async def _register_headers(client, username: str) -> dict[str, str]:
+    resp = await client.post(
+        "/api/v1/auth/register",
+        json={"username": username, "password": "password123"},
+    )
+    assert resp.status_code == 200
+    token = resp.json()["data"]["token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def _create_novel(client, headers: dict[str, str]) -> dict:
+    resp = await client.post(
+        "/api/v1/novels",
+        headers=headers,
+        json={"title": "规划测试小说", "description": "用于测试规划模块"},
+    )
+    assert resp.status_code == 200
+    return resp.json()["data"]
+
+
+async def test_create_volume_arc(client):
+    """创建卷弧并验证返回数据。"""
+    headers = await _register_headers(client, "arc_user_1")
+    novel = await _create_novel(client, headers)
+    novel_id = novel["id"]
+
+    payload = {
+        "title": "第一卷：崛起",
+        "goal": "主角从平凡开始修炼",
+        "start_state": "平凡少年",
+        "end_state": "初入宗门",
+        "order_index": 0,
+        "key_events": ["拜师", "觉醒", "试炼"],
+        "pacing_notes": "前慢后快",
+        "foreshadowing_plan": [{"item": "古剑", "chapter": 3}],
+    }
+    resp = await client.post(
+        f"/api/v1/novels/{novel_id}/planning/volume-arcs",
+        headers=headers,
+        json=payload,
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["novel_id"] == novel_id
+    assert data["title"] == "第一卷：崛起"
+    assert data["goal"] == "主角从平凡开始修炼"
+    assert data["start_state"] == "平凡少年"
+    assert data["end_state"] == "初入宗门"
+    assert data["order_index"] == 0
+    assert data["key_events"] == ["拜师", "觉醒", "试炼"]
+    assert data["pacing_notes"] == "前慢后快"
+    assert data["status"] == "draft"
+    assert "id" in data
+
+
+async def test_list_volume_arcs_ordered(client):
+    """列出卷弧，按 order_index 排序。"""
+    headers = await _register_headers(client, "arc_user_2")
+    novel = await _create_novel(client, headers)
+    novel_id = novel["id"]
+
+    for i, title in enumerate(["卷三", "卷一", "卷二"]):
+        await client.post(
+            f"/api/v1/novels/{novel_id}/planning/volume-arcs",
+            headers=headers,
+            json={"title": title, "order_index": i},
+        )
+
+    resp = await client.get(
+        f"/api/v1/novels/{novel_id}/planning/volume-arcs",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert len(data) == 3
+    assert data[0]["order_index"] == 0
+    assert data[0]["title"] == "卷三"
+    assert data[1]["order_index"] == 1
+    assert data[1]["title"] == "卷一"
+    assert data[2]["order_index"] == 2
+    assert data[2]["title"] == "卷二"
+
+
+async def test_activate_volume_arc_deactivates_previous(client):
+    """激活一个新卷弧，之前激活的卷弧自动变为 archived。"""
+    headers = await _register_headers(client, "arc_user_3")
+    novel = await _create_novel(client, headers)
+    novel_id = novel["id"]
+
+    arc1 = await client.post(
+        f"/api/v1/novels/{novel_id}/planning/volume-arcs",
+        headers=headers,
+        json={"title": "第一卷", "order_index": 0},
+    )
+    arc1_id = arc1.json()["data"]["id"]
+    await client.put(
+        f"/api/v1/novels/{novel_id}/planning/volume-arcs/{arc1_id}/activate",
+        headers=headers,
+    )
+
+    arc2 = await client.post(
+        f"/api/v1/novels/{novel_id}/planning/volume-arcs",
+        headers=headers,
+        json={"title": "第二卷", "order_index": 1},
+    )
+    arc2_id = arc2.json()["data"]["id"]
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/planning/volume-arcs/{arc2_id}/activate",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "active"
+
+    get_resp = await client.get(
+        f"/api/v1/novels/{novel_id}/planning/volume-arcs/{arc1_id}",
+        headers=headers,
+    )
+    assert get_resp.json()["data"]["status"] == "archived"
+
+
+async def test_create_plan_version(client):
+    """创建计划版本，包含 change_reason 和 impact_scope。"""
+    headers = await _register_headers(client, "ver_user_1")
+    novel = await _create_novel(client, headers)
+    novel_id = novel["id"]
+
+    payload = {
+        "plan_type": "volume_arc",
+        "plan_id": 1,
+        "change_reason": "调整卷弧结构",
+        "impact_scope": "第一卷整体走向",
+        "snapshot_json": {"title": "第一卷", "goal": "新目标"},
+    }
+    resp = await client.post(
+        f"/api/v1/novels/{novel_id}/planning/plan-versions",
+        headers=headers,
+        json=payload,
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["plan_type"] == "volume_arc"
+    assert data["plan_id"] == 1
+    assert data["change_reason"] == "调整卷弧结构"
+    assert data["impact_scope"] == "第一卷整体走向"
+    assert data["snapshot_json"] == {"title": "第一卷", "goal": "新目标"}
+    assert data["version"] == 1
+    assert data["status"] == "current"
+
+
+async def test_activate_plan_version(client):
+    """激活一个已是 current 的版本应成功（幂等）。"""
+    headers = await _register_headers(client, "ver_user_2")
+    novel = await _create_novel(client, headers)
+    novel_id = novel["id"]
+
+    v1_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/planning/plan-versions",
+        headers=headers,
+        json={"plan_type": "blueprint", "plan_id": 10, "change_reason": "初版", "impact_scope": "全局"},
+    )
+    v1_id = v1_resp.json()["data"]["id"]
+
+    v2_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/planning/plan-versions",
+        headers=headers,
+        json={"plan_type": "blueprint", "plan_id": 10, "change_reason": "修订版", "impact_scope": "第2章"},
+    )
+    v2_id = v2_resp.json()["data"]["id"]
+
+    # v2 创建后，v1 应在数据库中被归档
+    list_resp = await client.get(
+        f"/api/v1/novels/{novel_id}/planning/plan-versions?plan_type=blueprint&plan_id=10",
+        headers=headers,
+    )
+    versions = list_resp.json()["data"]
+    v1_from_db = next(v for v in versions if v["id"] == v1_id)
+    v2_from_db = next(v for v in versions if v["id"] == v2_id)
+    assert v1_from_db["status"] == "archived"
+    assert v2_from_db["status"] == "current"
+
+    # 激活已是 current 的 v2（幂等）
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/planning/plan-versions/{v2_id}/activate",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "current"
+
+
+async def test_archived_plan_version_cannot_activate(client):
+    """已归档的版本不能重新激活（400）。"""
+    headers = await _register_headers(client, "ver_user_3")
+    novel = await _create_novel(client, headers)
+    novel_id = novel["id"]
+
+    # 创建版本，然后创建新版本使第一个归档
+    v1_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/planning/plan-versions",
+        headers=headers,
+        json={"plan_type": "blueprint", "plan_id": 20, "change_reason": "v1", "impact_scope": "x"},
+    )
+    v1_id = v1_resp.json()["data"]["id"]
+
+    await client.post(
+        f"/api/v1/novels/{novel_id}/planning/plan-versions",
+        headers=headers,
+        json={"plan_type": "blueprint", "plan_id": 20, "change_reason": "v2", "impact_scope": "x"},
+    )
+
+    # 尝试激活已归档的 v1
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/planning/plan-versions/{v1_id}/activate",
+        headers=headers,
+    )
+    assert resp.status_code == 400
+    assert "archived" in resp.json()["message"].lower() or "归档" in resp.json()["message"]
+
+
+async def test_cross_user_404(client):
+    """其他用户无法访问或操作卷弧（返回 404）。"""
+    headers_a = await _register_headers(client, "cross_a")
+    headers_b = await _register_headers(client, "cross_b")
+    novel_a = await _create_novel(client, headers_a)
+    novel_a_id = novel_a["id"]
+
+    # A 创建一个卷弧
+    arc_resp = await client.post(
+        f"/api/v1/novels/{novel_a_id}/planning/volume-arcs",
+        headers=headers_a,
+        json={"title": "A的卷弧", "order_index": 0},
+    )
+    arc_id = arc_resp.json()["data"]["id"]
+
+    # B 尝试获取该卷弧
+    resp = await client.get(
+        f"/api/v1/novels/{novel_a_id}/planning/volume-arcs/{arc_id}",
+        headers=headers_b,
+    )
+    assert resp.status_code == 404
+
+    # B 尝试更新该卷弧
+    resp = await client.put(
+        f"/api/v1/novels/{novel_a_id}/planning/volume-arcs/{arc_id}",
+        headers=headers_b,
+        json={"title": "B的修改"},
+    )
+    assert resp.status_code == 404
+
+
+async def test_planning_dashboard(client):
+    """规划仪表盘返回所有关键规划数据。"""
+    headers = await _register_headers(client, "dash_user")
+    novel = await _create_novel(client, headers)
+    novel_id = novel["id"]
+
+    resp = await client.get(
+        f"/api/v1/novels/{novel_id}/planning/dashboard",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    # 检查结构：active_blueprint, active_volume_arcs, current_chapter_plans,
+    # open_review_issues, unresolved_foreshadowings
+    assert "active_blueprint" in data
+    assert "active_volume_arcs" in data
+    assert "current_chapter_plans" in data
+    assert "open_review_issues" in data
+    assert "unresolved_foreshadowings" in data
