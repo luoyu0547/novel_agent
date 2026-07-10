@@ -95,11 +95,24 @@ async def test_writing_run_v2_default_values(db):
 
 @pytest.mark.asyncio
 async def test_pending_repair_nullable_chapter_id(db):
-    """PendingRepair.chapter_id 可为 None（草稿尚未被接受到真实章节时）。"""
+    """PendingRepair.chapter_id 可为 None（草稿尚未被接受到真实章节时），且关联真实 WritingRun。"""
+    run = WritingRun(
+        novel_id=1,
+        chapter_brief_id=1,
+        context_package_id=1,
+        target_chapter_id=None,
+        status="completed",
+        draft_content="草稿正文",
+        word_count=4,
+    )
+    db.add(run)
+    await db.flush()
+    assert run.id is not None
+
     repair = PendingRepair(
         novel_id=1,
         chapter_id=None,
-        writing_run_id=1,
+        writing_run_id=run.id,
         issue_type="character_choice",
         description="角色抉择方向",
         location="第3段",
@@ -110,10 +123,16 @@ async def test_pending_repair_nullable_chapter_id(db):
     )
     db.add(repair)
     await db.flush()
-    result = await db.get(PendingRepair, repair.id)
-    assert result is not None
-    assert result.chapter_id is None
-    assert result.status == "pending"
+
+    persisted_repair = await db.get(PendingRepair, repair.id)
+    assert persisted_repair is not None
+    assert persisted_repair.chapter_id is None
+    assert persisted_repair.writing_run_id == run.id
+    assert persisted_repair.status == "pending"
+
+    persisted_run = await db.get(WritingRun, run.id)
+    assert persisted_run is not None
+    assert persisted_run.target_chapter_id is None
 
 
 @pytest.mark.asyncio
