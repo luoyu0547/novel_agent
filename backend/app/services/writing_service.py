@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.ai.quality_gate import BaseQualityGateAgent, FakeQualityGateAgent, DeepSeekQualityGateAgent
+from app.ai.service import BaseExtractionService, DeepSeekExtractionService
 from app.ai.writer import BaseWritingGenerator, DeepSeekWritingGenerator
 from app.services.quality_gate_service import QualityGateService
 from app.core.exceptions import NotFound, AppException
@@ -47,12 +48,14 @@ class WritingService:
         novel_id: int,
         generator: Optional[BaseWritingGenerator] = None,
         gate_agent: Optional[BaseQualityGateAgent] = None,
+        extraction_service: Optional[BaseExtractionService] = None,
     ):
         self.db = db
         self.user_id = user_id
         self.novel_id = novel_id
         self.generator = generator or DeepSeekWritingGenerator()
         self.gate_agent = gate_agent or DeepSeekQualityGateAgent()
+        self.extraction_service = extraction_service or DeepSeekExtractionService()
         self.novel_repo = NovelRepo(db)
         self.blueprint_repo = BlueprintRepo(db)
         self.plan_repo = ChapterPlanRepo(db)
@@ -349,7 +352,19 @@ class WritingService:
         run.status = "accepted"
         run.accepted_at = datetime.datetime.now()
         await self.db.commit()
-        return chapter
+
+        extraction_result = {"pending_ids": [], "pending_count": 0, "error": None}
+        try:
+            extraction_result = await self.extraction_service.extract(
+                novel_id=self.novel_id,
+                chapter_id=chapter.id,
+                user_id=self.user_id,
+            )
+        except Exception as e:
+            logger.exception("Extraction after accept failed for run %s", run_id)
+            extraction_result = {"pending_ids": [], "pending_count": 0, "error": str(e)}
+
+        return chapter, extraction_result
 
     async def discard_writing_run(self, run_id: int):
         await self._ensure_owned_novel()

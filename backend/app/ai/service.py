@@ -1,4 +1,6 @@
 import logging
+from abc import ABC, abstractmethod
+from typing import Optional
 
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -51,7 +53,18 @@ TOOLS = [
 ]
 
 
-class NovelExtractionService:
+class BaseExtractionService(ABC):
+    @abstractmethod
+    async def extract(self, novel_id: int, chapter_id: int, user_id: int) -> dict:
+        ...
+
+
+class FakeExtractionService(BaseExtractionService):
+    async def extract(self, novel_id: int, chapter_id: int, user_id: int) -> dict:
+        return {"chapter_summary": "fake", "pending_ids": [1], "pending_count": 1}
+
+
+class DeepSeekExtractionService(BaseExtractionService):
     async def extract(self, novel_id: int, chapter_id: int, user_id: int, mode: str = "standard") -> dict:
         checkpointer = InMemorySaver()
         middleware = [logging_middleware]

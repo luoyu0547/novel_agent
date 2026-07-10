@@ -846,3 +846,166 @@ async def test_resolve_repair_already_resolved_400(client, novel_and_headers, db
     )
     assert resp.status_code == 400
     assert "已处理" in resp.json()["message"]
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Post-accept extraction hook
+# ---------------------------------------------------------------------------
+
+
+class CountingFakeExtractionService:
+    """Records calls to extract for assertion."""
+
+    def __init__(self):
+        self.call_count = 0
+        self.captured_kwargs = None
+
+    async def extract(self, novel_id: int, chapter_id: int, user_id: int) -> dict:
+        self.call_count += 1
+        self.captured_kwargs = dict(novel_id=novel_id, chapter_id=chapter_id, user_id=user_id)
+        return {"chapter_summary": "fake", "pending_ids": [1, 2], "pending_count": 2}
+
+
+class RaisingFakeExtractionService:
+    """Simulates extraction failure."""
+
+    async def extract(self, novel_id: int, chapter_id: int, user_id: int) -> dict:
+        raise RuntimeError("extraction failed")
+
+
+@pytest.mark.asyncio
+async def test_accept_new_chapter_calls_extraction(db):
+    """Accepting a new chapter invokes extraction with correct chapter_id."""
+    from app.services.writing_service import WritingService
+    from app.ai.writer import FakeWritingGenerator
+    from app.ai.quality_gate import FakeQualityGateAgent
+
+    user_id, novel_id, brief_id = await _seed_writing_setup(db)
+
+    gen = FakeWritingGenerator()
+    extractor = CountingFakeExtractionService()
+    svc = WritingService(
+        db=db, user_id=user_id, novel_id=novel_id,
+        generator=gen, gate_agent=FakeQualityGateAgent(),
+        extraction_service=extractor,
+    )
+    run = await svc.create_writing_run(brief_id)
+    assert run.status == "completed"
+
+    chapter, extraction = await svc.accept_writing_run(run.id)
+    assert extractor.call_count == 1
+    assert extractor.captured_kwargs["chapter_id"] == chapter.id
+    assert extractor.captured_kwargs["novel_id"] == novel_id
+    assert extractor.captured_kwargs["user_id"] == user_id
+    assert extraction["pending_count"] == 2
+    assert extraction["pending_ids"] == [1, 2]
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_accept_existing_chapter_calls_extraction(db):
+    """Accepting into a target chapter invokes extraction with that chapter."""
+    from app.services.writing_service import WritingService
+    from app.ai.writer import FakeWritingGenerator
+    from app.ai.quality_gate import FakeQualityGateAgent
+    from app.models.novel import Chapter
+
+    user_id, novel_id, brief_id = await _seed_writing_setup(db)
+
+    # Pre-create a chapter
+    existing = Chapter(novel_id=novel_id, title="已有章节", content="旧内容", summary="", status="draft")
+    db.add(existing)
+    await db.flush()
+
+    gen = FakeWritingGenerator()
+    extractor = CountingFakeExtractionService()
+    svc = WritingService(
+        db=db, user_id=user_id, novel_id=novel_id,
+        generator=gen, gate_agent=FakeQualityGateAgent(),
+        extraction_service=extractor,
+    )
+    run = await svc.create_writing_run(brief_id)
+    run.target_chapter_id = existing.id
+    await db.flush()
+
+    chapter, extraction = await svc.accept_writing_run(run.id)
+    assert chapter.id == existing.id
+    assert extractor.call_count == 1
+    assert extractor.captured_kwargs["chapter_id"] == existing.id
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_accept_extraction_failure_does_not_rollback_accept(db):
+    """Extraction failure after accept does not undo the chapter acceptance."""
+    from app.services.writing_service import WritingService
+    from app.ai.writer import FakeWritingGenerator
+    from app.ai.quality_gate import FakeQualityGateAgent
+    from app.models.novel import Chapter
+    from app.models.writing import WritingRun
+    from sqlalchemy import select
+
+    user_id, novel_id, brief_id = await _seed_writing_setup(db)
+
+    gen = FakeWritingGenerator()
+    extractor = RaisingFakeExtractionService()
+    svc = WritingService(
+        db=db, user_id=user_id, novel_id=novel_id,
+        generator=gen, gate_agent=FakeQualityGateAgent(),
+        extraction_service=extractor,
+    )
+    run = await svc.create_writing_run(brief_id)
+
+    chapter, extraction = await svc.accept_writing_run(run.id)
+    assert chapter.id is not None
+    assert extraction["error"] is not None
+    assert "extraction failed" in extraction["error"]
+    assert extraction["pending_count"] == 0
+
+    # Chapter is persisted
+    persisted = await db.get(Chapter, chapter.id)
+    assert persisted is not None
+    assert persisted.content == run.draft_content
+
+    # Run is accepted
+    refreshed = await db.get(WritingRun, run.id)
+    assert refreshed.status == "accepted"
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_accept_api_returns_extraction_info(client, novel_and_headers):
+    """The accept endpoint returns extraction info in the response."""
+    novel, headers = novel_and_headers
+    novel_id = novel["id"]
+
+    bp_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/blueprints/generate",
+        headers=headers,
+        json={"author_input": "测试"},
+    )
+    bp_id = bp_resp.json()["data"]["id"]
+    await client.put(f"/api/v1/novels/{novel_id}/blueprints/{bp_id}/activate", headers=headers)
+    plan_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/chapter-plans/next/generate", headers=headers)
+    plan_id = plan_resp.json()["data"]["id"]
+    brief_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/chapter-briefs/generate", headers=headers,
+        json={"chapter_plan_id": plan_id})
+    brief_id = brief_resp.json()["data"]["id"]
+    run_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/writing-runs", headers=headers,
+        json={"chapter_brief_id": brief_id})
+    run_id = run_resp.json()["data"]["id"]
+
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/writing-runs/{run_id}/accept",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert "chapter" in data
+    assert "extraction" in data
+    assert "pending_ids" in data["extraction"]
+    assert "pending_count" in data["extraction"]
+    assert data["chapter"]["novel_id"] == novel_id

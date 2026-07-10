@@ -208,9 +208,12 @@ async def accept_writing_run(
     db: AsyncSession = Depends(get_db),
 ):
     svc = _get_service(db, current_user, novel_id)
-    chapter = await svc.accept_writing_run(run_id)
+    chapter, extraction = await svc.accept_writing_run(run_id)
     from app.schemas.novel import ChapterOut
-    return ApiResponse.success(data=ChapterOut.model_validate(chapter).model_dump(), message="草稿已接受并写入章节")
+    return ApiResponse.success(data={
+        "chapter": ChapterOut.model_validate(chapter).model_dump(),
+        "extraction": extraction,
+    }, message="草稿已接受并写入章节")
 
 
 @router.put("/writing-runs/{run_id}/discard")
