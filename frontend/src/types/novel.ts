@@ -61,3 +61,6 @@ export interface AcceptWritingRunResponse {
 export interface NovelOut extends NovelListItem {
   chapters?: ChapterOut[]
 }
+
+/** Alias for ChapterOut used by publish/accept endpoints */
+export type Chapter = ChapterOut

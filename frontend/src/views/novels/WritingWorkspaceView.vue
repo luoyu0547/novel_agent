@@ -1,18 +1,25 @@
 <script setup lang="ts">
 import { useWritingStore } from '@/stores/writing'
+import { usePlotPlanningStore } from '@/stores/plotPlanning'
 import { usePendingMemoryStore } from '@/stores/pendingMemory'
 import NovelWorkspaceTabs from '@/components/novels/NovelWorkspaceTabs.vue'
+import PlotUnitPanel from '@/components/writing/PlotUnitPanel.vue'
+import DecisionCard from '@/components/writing/DecisionCard.vue'
+import DraftRevisionDiff from '@/components/writing/DraftRevisionDiff.vue'
 import type { ChapterBrief, WritingRun } from '@/types/writing'
+import type { PlotUnitCreate } from '@/types/plotPlanning'
+import * as writingApi from '@/api/writing'
 
 const route = useRoute()
 const store = useWritingStore()
+const ppStore = usePlotPlanningStore()
 const pendingMemoryStore = usePendingMemoryStore()
 const novelId = Number(route.params.id)
 
 const authorInput = ref('')
 const showBlueprintEditor = ref(false)
 const blueprintText = ref('')
-const activeSection = ref<'blueprint' | 'plan' | 'brief' | 'context' | 'draft'>('blueprint')
+const activeSection = ref<'blueprint' | 'plan' | 'brief' | 'context' | 'draft' | 'decision' | 'revision'>('blueprint')
 
 const latestDraftBlueprint = computed(() =>
   store.blueprints.find(b => b.status === 'draft') || null,
@@ -26,7 +33,11 @@ const pendingCountAfterAccept = ref(0)
 const extractionError = ref<string | null>(null)
 
 const activeRun = computed<WritingRun | null>(() =>
-  store.writingRuns.find(r => r.status === 'completed' || r.status === 'failed') || null,
+  store.writingRuns.find(r => r.status === 'completed' || r.status === 'failed' || r.status === 'decision_required') || null,
+)
+
+const decisionRequiredRun = computed<WritingRun | null>(() =>
+  store.writingRuns.find(r => r.status === 'decision_required') || null,
 )
 
 onMounted(async () => {
@@ -37,6 +48,9 @@ onMounted(async () => {
   } else if (store.blueprints.length > 0) {
     blueprintText.value = JSON.stringify(store.blueprints[0]!.content_json, null, 2)
   }
+  await ppStore.fetchFoundation(novelId)
+  await ppStore.fetchPlotUnits(novelId)
+  await ppStore.fetchPendingDecisions(novelId)
 })
 
 async function handleGenerateBlueprint() {
@@ -103,6 +117,79 @@ async function handleDiscardRun(runId: number) {
   await store.discardRun(novelId, runId)
   ElMessage.success('草稿已废弃')
 }
+
+// --- Phase 3 handlers ---
+const foundationOutline = ref('')
+const foundationIntent = ref('')
+const foundationStageGoal = ref('')
+
+async function handleSaveFoundation() {
+  await ppStore.updateFoundation(novelId, {
+    outline: foundationOutline.value,
+    current_intent: foundationIntent.value,
+    stage_goal: foundationStageGoal.value,
+  })
+  ElMessage.success('作者资料已保存')
+}
+
+async function handleCreatePlotUnit(data: PlotUnitCreate) {
+  await ppStore.createPlotUnit(novelId, data)
+  ElMessage.success('剧情单元已创建')
+}
+
+async function handleGeneratePlotPlan(plotUnitId: number, authorInput: string) {
+  const plan = await ppStore.generatePlan(novelId, plotUnitId, authorInput)
+  if (plan) {
+    ElMessage.success('计划已生成')
+  }
+}
+
+async function handleConfirmPlan(plotUnitId: number, revisionId: number) {
+  await ppStore.confirmPlan(novelId, plotUnitId, revisionId)
+  ElMessage.success('计划已确认')
+}
+
+async function handleDecisionChoose(payload: { optionIndex?: number; customIntent?: string }) {
+  if (!ppStore.pendingDecisions.length) return
+  const decision = ppStore.pendingDecisions[0]
+  await ppStore.chooseDecision(novelId, decision!.id, {
+    option_index: payload.optionIndex,
+    custom_intent: payload.customIntent,
+  })
+  ElMessage.success('决策已应用')
+  activeSection.value = 'revision'
+}
+
+async function handleApplyDraft(revisionId: number) {
+  ElMessage.success('草稿修订已应用')
+}
+
+async function handleReplaceDraft(revisionId: number) {
+  ElMessage.success('草稿已替换')
+}
+
+async function handleReviewRun(runId: number) {
+  try {
+    const result = await writingApi.reviewWritingRun(novelId, runId)
+    if (result.decision) {
+      ppStore.pendingDecisions.push(result.decision as any)
+      activeSection.value = 'decision'
+      ElMessage.info('审查发现需要处理的问题')
+    } else {
+      ElMessage.success('审查通过，无问题')
+    }
+  } catch {
+    ElMessage.error('审查失败')
+  }
+}
+
+watch(() => ppStore.foundation, (f) => {
+  if (f) {
+    foundationOutline.value = f.outline
+    foundationIntent.value = f.current_intent
+    foundationStageGoal.value = f.stage_goal
+  }
+}, { immediate: true })
 
 function editBlueprint(bp: any) {
   blueprintText.value = JSON.stringify(bp.content_json, null, 2)
@@ -235,7 +322,11 @@ async function saveBlueprint(bpId: number) {
         <template #header>
           <span>5. 生成草稿</span>
         </template>
-        <div v-if="activeRun && activeRun.status === 'completed'">
+        <div v-if="decisionRequiredRun" class="writing__decision-blocked">
+          <el-alert type="warning" :closable="false" title="草稿需要决策" description="AI 检测到冲突，请先处理决策卡" />
+          <el-button size="small" @click="activeSection = 'decision'">查看决策卡</el-button>
+        </div>
+        <div v-else-if="activeRun && activeRun.status === 'completed'">
           <div class="writing__stats">
             <span>字数：{{ activeRun.word_count }}</span>
             <span>目标：{{ activeRun.gate_result_json.target_words }}</span>
@@ -249,6 +340,7 @@ async function saveBlueprint(bpId: number) {
           <div class="writing__actions">
             <el-button type="primary" @click="handleAcceptRun(activeRun.id)">接受到章节</el-button>
             <el-button @click="handleDiscardRun(activeRun.id)">废弃</el-button>
+            <el-button @click="handleReviewRun(activeRun.id)">审查</el-button>
           </div>
           <div v-if="pendingCountAfterAccept > 0" class="writing__extraction-info">
             <el-tag type="warning" class="writing__pending-tag">
@@ -268,12 +360,38 @@ async function saveBlueprint(bpId: number) {
         <el-button
           type="primary"
           class="writing__btn"
-          :disabled="!store.latestContext"
+          :disabled="!store.latestContext || !!decisionRequiredRun"
           :loading="store.loading"
           @click="handleGenerateDraft"
         >
           {{ store.writingRuns.length ? '重新生成草稿' : '生成草稿' }}
         </el-button>
+      </el-card>
+
+      <!-- 6. Decision Card (Phase 3) -->
+      <el-card v-if="ppStore.pendingDecisions.length" class="writing__section" shadow="never">
+        <template #header>
+          <span>6. 决策卡</span>
+        </template>
+        <DecisionCard
+          v-for="d in ppStore.pendingDecisions"
+          :key="d.id"
+          :decision="d"
+          @choose="handleDecisionChoose"
+        />
+      </el-card>
+
+      <!-- 7. Draft Revision Diff (Phase 3) -->
+      <el-card v-if="ppStore.currentDraftRevision" class="writing__section" shadow="never">
+        <template #header>
+          <span>7. 草稿修订</span>
+        </template>
+        <DraftRevisionDiff
+          :revision="ppStore.currentDraftRevision"
+          :selected="true"
+          @apply="handleApplyDraft"
+          @replace="handleReplaceDraft"
+        />
       </el-card>
     </div>
   </div>

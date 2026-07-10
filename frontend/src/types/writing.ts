@@ -79,7 +79,7 @@ export interface WritingRun {
   chapter_brief_id: number
   context_package_id: number
   target_chapter_id: number | null
-  status: 'running' | 'completed' | 'failed' | 'accepted' | 'discarded'
+  status: 'running' | 'completed' | 'decision_required' | 'failed' | 'accepted' | 'discarded'
   draft_content: string
   word_count: number
   gate_result_json: {
@@ -93,6 +93,9 @@ export interface WritingRun {
   gated: boolean
   has_pending_repairs: boolean
   error_message: string | null
+  decision_id: number | null
+  context_snapshot_json: Record<string, unknown>
+  planning_blocked: boolean
   accepted_at: string | null
   created_at: string
   updated_at: string

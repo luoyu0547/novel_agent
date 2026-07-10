@@ -27,8 +27,11 @@ const emit = defineEmits<{
   'update:content': [value: string]
   'update:status': [value: ChapterStatus]
   save: []
+  publish: []
   resolve: [repairId: number, payload: { action: 'apply' | 'dismiss'; choice_index?: number; intent_text?: string }]
 }>()
+
+const isLocked = computed(() => props.status === 'locked')
 
 const hasRepairs = computed(() =>
   props.pendingRepairs.length > 0 || props.repairLogs.length > 0,
@@ -62,7 +65,7 @@ defineExpose({ wordCount })
       <el-button text @click="router.back()">← 返回</el-button>
       <span class="writing-editor__novel-name">{{ route.params.id }}</span>
       <div class="writing-editor__actions">
-        <el-select :model-value="status" size="small" @update:model-value="emit('update:status', $event)">
+        <el-select v-if="!isLocked" :model-value="status" size="small" @update:model-value="emit('update:status', $event)">
           <el-option
             v-for="opt in CHAPTER_STATUS_OPTIONS"
             :key="opt.value"
@@ -70,11 +73,12 @@ defineExpose({ wordCount })
             :value="opt.value"
           />
         </el-select>
+        <el-text v-else size="small" type="info">已锁定</el-text>
         <el-text size="small" type="info">已写 {{ wordCount }} 字</el-text>
         <el-text v-if="saving" size="small" type="info">保存中…</el-text>
         <el-text v-else-if="savedAt" size="small" type="info">已保存 {{ savedAt }}</el-text>
-        <el-button size="small" type="primary" :loading="saving" @click="onManualSave">保存</el-button>
-        <el-button size="small" text @click="focused = !focused">{{ focused ? '退出专注' : '专注' }}</el-button>
+        <el-button v-if="!isLocked" size="small" type="primary" :loading="saving" @click="onManualSave">保存</el-button>
+        <el-button v-if="!isLocked" size="small" text @click="focused = !focused">{{ focused ? '退出专注' : '专注' }}</el-button>
       </div>
     </header>
     <div class="writing-editor__body" :class="{ 'writing-editor__body--focused': focused }">
@@ -83,6 +87,7 @@ defineExpose({ wordCount })
           :model-value="title"
           placeholder="章节标题"
           class="writing-editor__title-input"
+          :disabled="isLocked"
           @update:model-value="emit('update:title', $event)"
         />
         <el-input
@@ -91,6 +96,7 @@ defineExpose({ wordCount })
           :autosize="{ minRows: 20 }"
           placeholder="开始写作..."
           class="writing-editor__textarea"
+          :readonly="isLocked"
           @update:model-value="onContentInput"
         />
       </div>

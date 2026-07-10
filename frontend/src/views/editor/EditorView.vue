@@ -13,6 +13,8 @@ const title = ref(''); const content = ref(''); const saving = ref(false); const
 const summary = ref('')
 const status = ref<ChapterStatus>('draft')
 
+const isLocked = computed(() => status.value === 'locked')
+
 onMounted(async () => {
   await novelStore.getNovel(novelId.value)
   await novelStore.loadChapter(novelId.value, chapterId.value)
@@ -46,8 +48,22 @@ function handleResolveRepair(repairId: number, payload: { action: 'apply' | 'dis
   writingStore.resolveRepair(novelId.value, repairId, payload)
 }
 
+async function handlePublish() {
+  saving.value = true
+  try {
+    const { publishChapter } = await import('@/api/writing')
+    await publishChapter(novelId.value, chapterId.value)
+    status.value = 'locked'
+    ElMessage.success('章节已发布为锁定状态')
+  } catch {
+    ElMessage.error('发布失败')
+  } finally {
+    saving.value = false
+  }
+}
+
 function handleKeydown(e: KeyboardEvent) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); handleSave() }
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); if (!isLocked.value) handleSave() }
 }
 
 onMounted(() => window.addEventListener('keydown', handleKeydown))
@@ -67,6 +83,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
       @update:content="content = $event"
       @update:status="status = $event"
       @save="handleSave"
+      @publish="handlePublish"
       @resolve="handleResolveRepair"
     />
   </div>
