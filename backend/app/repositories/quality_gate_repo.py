@@ -92,3 +92,9 @@ class ReviewIssueRepo:
             .order_by(ReviewIssue.created_at.asc())
         )
         return list(result.scalars().all())
+
+    async def cleanup_by_writing_run(self, writing_run_id: int):
+        issues = await self.list_by_writing_run(writing_run_id)
+        for issue in issues:
+            await self.db.delete(issue)
+        await self.db.flush()

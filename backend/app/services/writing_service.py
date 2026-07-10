@@ -271,6 +271,7 @@ class WritingService:
                     feedback = await self._collect_gate_feedback(run.id)
                     package_with_feedback = dict(package)
                     package_with_feedback["gate_feedback"] = feedback
+                    await self._cleanup_gate_records(run.id)
                     draft = await self.generator.generate_draft(package_with_feedback)
                     word_count = self._count_words(draft)
                     run.draft_content = draft
@@ -399,3 +400,11 @@ class WritingService:
         log_repo = RepairLogRepo(self.db)
         logs = await log_repo.list_by_writing_run(run_id)
         return "；".join(l.description for l in logs if l.description)
+
+    async def _cleanup_gate_records(self, run_id: int):
+        """Remove RepairLog, PendingRepair and ReviewIssue rows so the next
+        iteration starts without stale records from previous rewrites."""
+        from app.repositories.quality_gate_repo import RepairLogRepo, PendingRepairRepo, ReviewIssueRepo
+        await RepairLogRepo(self.db).cleanup_by_writing_run(run_id)
+        await PendingRepairRepo(self.db).cleanup_by_writing_run(run_id)
+        await ReviewIssueRepo(self.db).cleanup_by_writing_run(run_id)
