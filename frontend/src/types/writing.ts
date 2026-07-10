@@ -94,14 +94,6 @@ export interface WritingRun {
   has_pending_repairs: boolean
   error_message: string | null
   accepted_at: string | null
-  mode: 'standard' | 'deep'
-  target_word_count: number
-  min_word_count: number
-  max_word_count: number
-  input_snapshot: Record<string, unknown>
-  agent_notes: string
-  self_check: Record<string, unknown>
-  plan_version_ids: number[]
   created_at: string
   updated_at: string
 }

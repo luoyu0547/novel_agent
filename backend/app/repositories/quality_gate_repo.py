@@ -3,7 +3,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.planning import ReviewIssue
+from app.models.quality_gate import ReviewIssue
 from app.models.writing import RepairLog, PendingRepair
 
 
