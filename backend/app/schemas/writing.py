@@ -28,9 +28,16 @@ class ChapterPlanOut(BaseModel):
     id: int
     novel_id: int
     chapter_id: Optional[int] = None
+    blueprint_id: Optional[int] = None
+    volume_arc_id: Optional[int] = None
     position: int
+    version: int = 1
     status: str
     content_json: dict[str, Any]
+    emotional_effect: str = ""
+    target_word_count: int = 0
+    foreshadowing_tasks: Any = {}
+    acceptance_criteria: str = ""
     created_at: datetime
     updated_at: datetime
 
@@ -39,6 +46,19 @@ class ChapterPlanOut(BaseModel):
 
 class ChapterPlanUpdateRequest(BaseModel):
     content_json: Optional[dict[str, Any]] = None
+    blueprint_id: Optional[int] = None
+    volume_arc_id: Optional[int] = None
+    status: Optional[str] = None
+    version: Optional[int] = None
+    emotional_effect: Optional[str] = None
+    target_word_count: Optional[int] = None
+    foreshadowing_tasks: Optional[Any] = None
+    acceptance_criteria: Optional[str] = None
+
+
+class ChapterPlanBatchGenerateRequest(BaseModel):
+    volume_arc_id: int
+    count: int = 3
 
 
 class ChapterBriefOut(BaseModel):

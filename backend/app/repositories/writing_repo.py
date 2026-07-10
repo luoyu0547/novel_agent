@@ -64,6 +64,17 @@ class ChapterPlanRepo:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def list_by_novel(self, novel_id: int, active_only: bool = False) -> list[ChapterPlan]:
+        stmt = (
+            select(ChapterPlan)
+            .where(ChapterPlan.novel_id == novel_id)
+            .order_by(ChapterPlan.position.asc())
+        )
+        if active_only:
+            stmt = stmt.where(ChapterPlan.status == "ready")
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_latest(self, novel_id: int) -> Optional[ChapterPlan]:
         result = await self.db.execute(
             select(ChapterPlan)

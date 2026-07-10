@@ -3,7 +3,9 @@
 import pytest
 
 from app.models.planning import VolumeArc, PlanVersion, ReviewIssue
+from app.models.writing import ChapterPlan
 from app.schemas.planning import VolumeArcOut, PlanVersionOut, ReviewIssueOut
+from app.schemas.writing import ChapterPlanOut
 
 
 # ── Existing model/schema creation tests (unchanged) ──────────────────────
@@ -236,6 +238,87 @@ async def test_review_issue_schema_serialization(db):
     assert out.severity == "auto_fixable"
     assert out.acceptance_blocking is False
     assert out.status == "resolved"
+
+
+# ── ChapterPlan extended fields (new for Task 6) ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_chapter_plan_extended_fields(db):
+    """ChapterPlan 新字段可正确创建和读取。"""
+    plan = ChapterPlan(
+        novel_id=1,
+        blueprint_id=2,
+        volume_arc_id=3,
+        position=1,
+        version=2,
+        status="ready",
+        content_json={"chapter_title": "测试章"},
+        emotional_effect="紧张悬疑",
+        target_word_count=4000,
+        foreshadowing_tasks={"hint": "玉佩来历", "plant_chapter": 5},
+        acceptance_criteria="字数达标，冲突充分展开",
+    )
+    db.add(plan)
+    await db.flush()
+    result = await db.get(ChapterPlan, plan.id)
+    assert result is not None
+    assert result.blueprint_id == 2
+    assert result.volume_arc_id == 3
+    assert result.version == 2
+    assert result.emotional_effect == "紧张悬疑"
+    assert result.target_word_count == 4000
+    assert result.foreshadowing_tasks == {"hint": "玉佩来历", "plant_chapter": 5}
+    assert result.acceptance_criteria == "字数达标，冲突充分展开"
+
+
+@pytest.mark.asyncio
+async def test_chapter_plan_default_version(db):
+    """ChapterPlan 默认 version=1，foreshadowing_tasks={}, acceptance_criteria=""。"""
+    plan = ChapterPlan(
+        novel_id=1,
+        position=1,
+        content_json={},
+    )
+    db.add(plan)
+    await db.flush()
+    result = await db.get(ChapterPlan, plan.id)
+    assert result.version == 1
+    assert result.foreshadowing_tasks == {}
+    assert result.acceptance_criteria == ""
+    assert result.emotional_effect == ""
+    assert result.target_word_count == 0
+    assert result.blueprint_id is None
+    assert result.volume_arc_id is None
+
+
+@pytest.mark.asyncio
+async def test_chapter_plan_schema_extended_fields(db):
+    """ChapterPlanOut 包含新字段并可序列化。"""
+    plan = ChapterPlan(
+        novel_id=1,
+        blueprint_id=2,
+        volume_arc_id=3,
+        position=1,
+        version=3,
+        status="ready",
+        content_json={"chapter_title": "新章"},
+        emotional_effect="温暖感动",
+        target_word_count=5000,
+        foreshadowing_tasks=[{"type": "reveal", "item": "古剑"}],
+        acceptance_criteria="完成感人的告别场景",
+    )
+    db.add(plan)
+    await db.flush()
+    out = ChapterPlanOut.model_validate(plan)
+    assert out.id == plan.id
+    assert out.blueprint_id == 2
+    assert out.volume_arc_id == 3
+    assert out.version == 3
+    assert out.emotional_effect == "温暖感动"
+    assert out.target_word_count == 5000
+    assert out.foreshadowing_tasks == [{"type": "reveal", "item": "古剑"}]
+    assert out.acceptance_criteria == "完成感人的告别场景"
 
 
 # ── API integration tests ─────────────────────────────────────────────────
@@ -509,3 +592,128 @@ async def test_planning_dashboard(client):
     assert "current_chapter_plans" in data
     assert "open_review_issues" in data
     assert "unresolved_foreshadowings" in data
+
+
+# ── ChapterPlan API tests (new for Task 6) ──────────────────────────────────
+
+
+async def test_chapter_plan_list_get_api(client):
+    """GET /chapter-plans 能列出所有章节计划，GET /chapter-plans/{id} 能获取单个。"""
+    headers = await _register_headers(client, "cp_user_list")
+    novel = await _create_novel(client, headers)
+    novel_id = novel["id"]
+
+    # 先创建蓝图并激活
+    resp = await client.post(
+        f"/api/v1/novels/{novel_id}/blueprints/generate",
+        headers=headers,
+        json={"author_input": "测试"},
+    )
+    bp_id = resp.json()["data"]["id"]
+    await client.put(
+        f"/api/v1/novels/{novel_id}/blueprints/{bp_id}/activate",
+        headers=headers,
+    )
+
+    # 生成 2 个章节计划
+    resp1 = await client.post(
+        f"/api/v1/novels/{novel_id}/chapter-plans/next/generate",
+        headers=headers,
+    )
+    assert resp1.status_code == 200
+    plan1 = resp1.json()["data"]
+    plan1_id = plan1["id"]
+
+    resp2 = await client.post(
+        f"/api/v1/novels/{novel_id}/chapter-plans/next/generate",
+        headers=headers,
+    )
+    assert resp2.status_code == 200
+
+    # 列出所有计划
+    list_resp = await client.get(
+        f"/api/v1/novels/{novel_id}/chapter-plans",
+        headers=headers,
+    )
+    assert list_resp.status_code == 200
+    plans = list_resp.json()["data"]
+    assert len(plans) >= 2
+
+    # 获取单个计划
+    get_resp = await client.get(
+        f"/api/v1/novels/{novel_id}/chapter-plans/{plan1_id}",
+        headers=headers,
+    )
+    assert get_resp.status_code == 200
+    assert get_resp.json()["data"]["id"] == plan1_id
+
+
+async def test_chapter_plan_list_active_only(client):
+    """GET /chapter-plans?active_only=true 只返回 status=ready 的计划。"""
+    headers = await _register_headers(client, "cp_user_active")
+    novel = await _create_novel(client, headers)
+    novel_id = novel["id"]
+
+    resp = await client.post(
+        f"/api/v1/novels/{novel_id}/blueprints/generate",
+        headers=headers,
+        json={"author_input": "测试"},
+    )
+    bp_id = resp.json()["data"]["id"]
+    await client.put(
+        f"/api/v1/novels/{novel_id}/blueprints/{bp_id}/activate",
+        headers=headers,
+    )
+
+    await client.post(
+        f"/api/v1/novels/{novel_id}/chapter-plans/next/generate",
+        headers=headers,
+    )
+
+    list_resp = await client.get(
+        f"/api/v1/novels/{novel_id}/chapter-plans?active_only=true",
+        headers=headers,
+    )
+    assert list_resp.status_code == 200
+    plans = list_resp.json()["data"]
+    assert len(plans) >= 1
+    for p in plans:
+        assert p["status"] == "ready"
+
+
+async def test_chapter_plan_update_extended_fields(client):
+    """PUT /chapter-plans/{id} 可更新新字段（acceptance_criteria 等）。"""
+    headers = await _register_headers(client, "cp_user_upd")
+    novel = await _create_novel(client, headers)
+    novel_id = novel["id"]
+
+    resp = await client.post(
+        f"/api/v1/novels/{novel_id}/blueprints/generate",
+        headers=headers,
+        json={"author_input": "测试"},
+    )
+    bp_id = resp.json()["data"]["id"]
+    await client.put(
+        f"/api/v1/novels/{novel_id}/blueprints/{bp_id}/activate",
+        headers=headers,
+    )
+
+    resp = await client.post(
+        f"/api/v1/novels/{novel_id}/chapter-plans/next/generate",
+        headers=headers,
+    )
+    plan_id = resp.json()["data"]["id"]
+
+    update_resp = await client.put(
+        f"/api/v1/novels/{novel_id}/chapter-plans/{plan_id}",
+        headers=headers,
+        json={
+            "acceptance_criteria": "需要完成三个场景",
+            "target_word_count": 5000,
+            "emotional_effect": "悲伤",
+        },
+    )
+    assert update_resp.status_code == 200
+    data = update_resp.json()["data"]
+    assert data["acceptance_criteria"] == "需要完成三个场景"
+    assert data["target_word_count"] == 5000

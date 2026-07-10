@@ -18,6 +18,9 @@ class BaseWritingGenerator:
     async def generate_chapter_plan(self, blueprint: dict, novel_data: dict) -> dict:
         raise NotImplementedError
 
+    async def generate_chapter_plans_batch(self, blueprint: dict, novel_data: dict, count: int) -> list[dict]:
+        raise NotImplementedError
+
     async def generate_chapter_brief(self, chapter_plan: dict, blueprint: dict, length_contract: dict) -> dict:
         raise NotImplementedError
 
@@ -52,6 +55,22 @@ class FakeWritingGenerator(BaseWritingGenerator):
             "pacing": "缓起急收，末尾留悬念",
             "foreshadowing_task": "暗示后续重大转折",
         }
+
+    async def generate_chapter_plans_batch(self, blueprint: dict, novel_data: dict, count: int) -> list[dict]:
+        chapters = novel_data.get("chapters", [])
+        base = len(chapters) + 1
+        return [
+            {
+                "chapter_title": f"第 {base + i} 章",
+                "plot_task": f"推进主线冲突（批次 {i+1}）",
+                "character_task": "展现主角性格变化",
+                "information_task": "揭示关键背景信息",
+                "emotional_effect": "紧张与期待交织",
+                "pacing": "缓起急收，末尾留悬念",
+                "foreshadowing_task": "暗示后续重大转折",
+            }
+            for i in range(count)
+        ]
 
     async def generate_chapter_brief(self, chapter_plan: dict, blueprint: dict, length_contract: dict) -> dict:
         return {
@@ -123,6 +142,24 @@ class DeepSeekWritingGenerator(BaseWritingGenerator):
 - foreshadowing_task: 伏笔任务
 
 只返回 JSON。"""
+        return await self._call_llm(prompt)
+
+    async def generate_chapter_plans_batch(self, blueprint: dict, novel_data: dict, count: int) -> list[dict]:
+        prompt = f"""根据以下小说蓝图和已有章节信息，生成 {count} 章连续的章节大纲，以 JSON 数组格式返回。
+
+蓝图核心内容：{json.dumps(blueprint, ensure_ascii=False)}
+已有章节数：{len(novel_data.get('chapters', []))}
+
+每章返回 JSON 字段：
+- chapter_title: 章节标题
+- plot_task: 剧情任务
+- character_task: 角色任务
+- information_task: 信息任务
+- emotional_effect: 情绪效果
+- pacing: 节奏目标
+- foreshadowing_task: 伏笔任务
+
+只返回 JSON 数组。"""
         return await self._call_llm(prompt)
 
     async def generate_chapter_brief(self, chapter_plan: dict, blueprint: dict, length_contract: dict) -> dict:

@@ -117,6 +117,17 @@ class WritingService:
 
     # ---- Chapter Plan ----
 
+    async def get_chapter_plans(self, active_only: bool = False) -> list[ChapterPlan]:
+        await self._ensure_owned_novel()
+        return await self.plan_repo.list_by_novel(self.novel_id, active_only=active_only)
+
+    async def get_chapter_plan(self, plan_id: int) -> ChapterPlan:
+        await self._ensure_owned_novel()
+        plan = await self.plan_repo.get_by_id(plan_id)
+        if not plan or plan.novel_id != self.novel_id:
+            raise NotFound("章节计划不存在")
+        return plan
+
     async def generate_chapter_plan(self) -> ChapterPlan:
         novel = await self._ensure_owned_novel()
         blueprint = await self.blueprint_repo.get_active(self.novel_id)
@@ -128,9 +139,55 @@ class WritingService:
         novel_data = {"chapters": chapters}
         content = await self.generator.generate_chapter_plan(blueprint.content_json, novel_data)
         position = (len(chapters) or 0) + 1
-        result = await self.plan_repo.create(self.novel_id, {"content_json": content, "position": position, "status": "ready"})
+        result = await self.plan_repo.create(self.novel_id, {
+            "content_json": content,
+            "position": position,
+            "status": "ready",
+            "blueprint_id": blueprint.id,
+            "version": 1,
+        })
         await self.db.commit()
         return result
+
+    async def generate_chapter_plans_batch(self, volume_arc_id: int, count: int) -> list[ChapterPlan]:
+        novel = await self._ensure_owned_novel()
+        blueprint = await self.blueprint_repo.get_active(self.novel_id)
+        if not blueprint:
+            raise AppException("请先生成并激活小说蓝图")
+
+        from app.models.planning import VolumeArc
+        arc = await self.db.get(VolumeArc, volume_arc_id)
+        if not arc or arc.novel_id != self.novel_id:
+            raise NotFound("卷弧不存在")
+        if arc.status == "archived":
+            raise AppException("已归档的卷弧不能生成章节计划")
+
+        chapters = []
+        if novel.chapters:
+            chapters = [{"id": c.id, "title": c.title, "summary": c.summary} for c in novel.chapters]
+        novel_data = {"chapters": chapters}
+
+        contents = await self.generator.generate_chapter_plans_batch(blueprint.content_json, novel_data, count)
+        if not isinstance(contents, list):
+            contents = [contents]
+
+        created = []
+        base_position = (len(chapters) or 0) + 1
+        for i, content in enumerate(contents):
+            plan = ChapterPlan(
+                novel_id=self.novel_id,
+                blueprint_id=blueprint.id,
+                volume_arc_id=volume_arc_id,
+                position=base_position + i,
+                status="ready",
+                content_json=content if isinstance(content, dict) else {},
+                version=1,
+            )
+            self.db.add(plan)
+            created.append(plan)
+        await self.db.flush()
+        await self.db.commit()
+        return created
 
     async def update_chapter_plan(self, plan_id: int, data: dict) -> ChapterPlan:
         await self._ensure_owned_novel()
@@ -221,6 +278,14 @@ class WritingService:
         brief = await self.brief_repo.get_by_id(brief_id)
         if not brief or brief.novel_id != self.novel_id:
             raise NotFound("章节任务书不存在")
+
+        # Reject archived chapter plans
+        plan = await self.plan_repo.get_by_id(brief.chapter_plan_id)
+        if plan and plan.status == "archived":
+            raise AppException("已归档的章节计划不能用于生成草稿")
+        if plan and plan.novel_id != self.novel_id:
+            raise NotFound("章节计划不存在")
+
         if context_package_id:
             context_package = await self.context_repo.get_by_id(context_package_id)
             if not context_package or context_package.novel_id != self.novel_id:
@@ -229,10 +294,27 @@ class WritingService:
         else:
             package = await self._build_context_package(novel, brief)
             context_package = await self.context_repo.create(self.novel_id, {"chapter_brief_id": brief_id, "package_json": package})
+
+        # Capture input snapshot for planning versions
+        blueprint = await self.blueprint_repo.get_active(self.novel_id)
+        input_snapshot = {
+            "blueprint_id": blueprint.id if blueprint else None,
+            "blueprint_version": blueprint.version if blueprint else None,
+            "chapter_plan_id": brief.chapter_plan_id if brief else None,
+            "chapter_plan_version": plan.version if plan else None,
+        }
+        plan_version_ids: list[int] = []
+        if blueprint and blueprint.id:
+            plan_version_ids.append(blueprint.id)
+        if plan and plan.id:
+            plan_version_ids.append(plan.id)
+
         run = await self.run_repo.create(self.novel_id, {
             "chapter_brief_id": brief_id,
             "context_package_id": context_package.id,
             "status": "running",
+            "input_snapshot": input_snapshot,
+            "plan_version_ids": plan_version_ids,
         })
         try:
             draft = await self.generator.generate_draft(package)

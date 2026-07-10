@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -11,6 +11,7 @@ from app.schemas.writing import (
     BlueprintGenerateRequest,
     BlueprintUpdateRequest,
     ChapterPlanUpdateRequest,
+    ChapterPlanBatchGenerateRequest,
     ChapterBriefUpdateRequest,
     WritingRunCreateRequest,
     NovelBlueprintOut,
@@ -110,6 +111,42 @@ async def update_chapter_plan(
     data = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     plan = await svc.update_chapter_plan(plan_id, data)
     return ApiResponse.success(data=ChapterPlanOut.model_validate(plan).model_dump())
+
+
+@router.get("/chapter-plans")
+async def list_chapter_plans(
+    novel_id: int,
+    active_only: bool = Query(False, description="仅返回 status=ready 的计划"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    svc = _get_service(db, current_user, novel_id)
+    plans = await svc.get_chapter_plans(active_only=active_only)
+    return ApiResponse.success(data=[ChapterPlanOut.model_validate(p).model_dump() for p in plans])
+
+
+@router.get("/chapter-plans/{plan_id}")
+async def get_chapter_plan(
+    novel_id: int,
+    plan_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    svc = _get_service(db, current_user, novel_id)
+    plan = await svc.get_chapter_plan(plan_id)
+    return ApiResponse.success(data=ChapterPlanOut.model_validate(plan).model_dump())
+
+
+@router.post("/chapter-plans/batch/generate")
+async def generate_chapter_plans_batch(
+    novel_id: int,
+    body: ChapterPlanBatchGenerateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    svc = _get_service(db, current_user, novel_id)
+    plans = await svc.generate_chapter_plans_batch(body.volume_arc_id, body.count)
+    return ApiResponse.success(data=[ChapterPlanOut.model_validate(p).model_dump() for p in plans])
 
 
 # ---- Chapter Briefs ----
