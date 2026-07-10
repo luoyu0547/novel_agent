@@ -1,6 +1,12 @@
 import pytest
 from pydantic import ValidationError
 
+from app.ai.plot_planning import (
+    ConflictOutput,
+    DecisionOption,
+    DraftGenerationOutput,
+)
+from app.ai.writer import FakePhase3WritingGenerator
 from app.models.plot_planning import (
     AuthorFoundation,
     AuthorFoundationRevision,
@@ -85,3 +91,57 @@ def test_decision_request_requires_option_or_custom_intent():
         ChooseDecisionRequest()
     assert ChooseDecisionRequest(option_index=1).option_index == 1
     assert ChooseDecisionRequest(custom_intent="保留事实并延后揭示").custom_intent
+
+
+def test_conflict_output_requires_two_real_options():
+    result = ConflictOutput(
+        source="during_generation",
+        core_conflict="已发布事实与新目标冲突",
+        options=[
+            DecisionOption(label="补充因果", action="supplement", consequence="保留已发布事实"),
+            DecisionOption(label="改变未来目标", action="change_goal", consequence="不触碰正文"),
+        ],
+        recommended_index=0,
+        recommendation_reason="影响范围最小",
+        impact_scope={"type": "scene", "start": 2, "end": 2},
+    )
+    assert len(result.options) == 2
+
+
+def test_conflict_output_rejects_duplicate_or_fake_options():
+    with pytest.raises(ValidationError):
+        ConflictOutput(
+            source="during_review",
+            core_conflict="冲突",
+            options=[
+                DecisionOption(label="同一方案", action="same", consequence="保留"),
+                DecisionOption(label="同一方案", action="same", consequence="保留"),
+            ],
+            recommended_index=0,
+            recommendation_reason="理由",
+            impact_scope={"type": "paragraph"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_fake_generation_can_return_decision_required():
+    generator = FakePhase3WritingGenerator(
+        draft_result=DraftGenerationOutput(
+            status="decision_required",
+            draft="不越过冲突点的部分正文",
+            conflict=ConflictOutput(
+                source="during_generation",
+                core_conflict="世界规则不允许新目标",
+                options=[
+                    DecisionOption(label="补充代价", action="add_cost", consequence="保留规则"),
+                    DecisionOption(label="调整目标", action="adjust_goal", consequence="保留角色动机"),
+                ],
+                recommended_index=0,
+                recommendation_reason="最小影响",
+                impact_scope={"type": "scene", "start": 1, "end": 1},
+            ),
+        )
+    )
+    result = await generator.generate_draft_result({"plot_plan": {}})
+    assert result.status == "decision_required"
+    assert result.conflict is not None

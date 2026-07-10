@@ -2,10 +2,19 @@
 
 import json
 import logging
-from typing import Optional
+from typing import Any, Optional
+
+from pydantic import BaseModel
 
 from app.ai.agent import create_novel_agent
 from app.ai.models import NovelAgentState
+from app.ai.plot_planning import (
+    AIProtocolError,
+    DraftGenerationOutput,
+    DraftReviewOutput,
+    LocalRevisionOutput,
+    PlotPlanOutput,
+)
 from app.core.config import settings
 
 logger = logging.getLogger("novel_agent.ai.writer")
@@ -25,6 +34,18 @@ class BaseWritingGenerator:
         raise NotImplementedError
 
     async def rewrite_fragment(self, draft: str, location: str, context: str, intent: Optional[str] = None) -> str:
+        raise NotImplementedError
+
+    async def generate_plot_plan(self, foundation: dict, plot_unit: dict, published_canon: dict) -> dict:
+        raise NotImplementedError
+
+    async def generate_draft_result(self, context_package: dict) -> DraftGenerationOutput:
+        raise NotImplementedError
+
+    async def review_draft(self, context_package: dict, draft: str) -> DraftReviewOutput:
+        raise NotImplementedError
+
+    async def revise_draft(self, context_package: dict, draft: str, conflict: dict, selected_direction: str) -> LocalRevisionOutput:
         raise NotImplementedError
 
 
@@ -79,6 +100,66 @@ class FakeWritingGenerator(BaseWritingGenerator):
 
     async def rewrite_fragment(self, draft: str, location: str, context: str, intent: Optional[str] = None) -> str:
         return draft.replace(location, f"[{location}]", 1)
+
+
+class FakePhase3WritingGenerator(BaseWritingGenerator):
+    def __init__(
+        self,
+        plot_plan: dict | None = None,
+        draft_result: DraftGenerationOutput | None = None,
+        review: DraftReviewOutput | None = None,
+        revision: LocalRevisionOutput | None = None,
+    ):
+        self._plot_plan = plot_plan
+        self._draft_result = draft_result
+        self._review = review
+        self._revision = revision
+
+    async def generate_plot_plan(self, foundation: dict, plot_unit: dict, published_canon: dict) -> dict:
+        if self._plot_plan is not None:
+            return self._plot_plan
+        return {
+            "starting_state": "当前已发布事实",
+            "stage_goal": "完成本阶段目标",
+            "core_conflict": "主线冲突",
+            "key_turns": [{"order": 1, "event": "关键转折", "required": True}],
+            "progression": [{"order": 1, "chapter_position": 1, "purpose": "推进目的", "scenes": ["场景目标"]}],
+            "character_changes": [],
+            "foreshadowing": [],
+            "must_complete": ["必须完成事项"],
+            "optional": [],
+            "completion_criteria": ["完成判断标准"],
+        }
+
+    async def generate_draft_result(self, context_package: dict) -> DraftGenerationOutput:
+        if self._draft_result is not None:
+            return self._draft_result
+        return DraftGenerationOutput(
+            status="draft_ready",
+            draft="边境的风裹挟着沙砾扑面而来。",
+        )
+
+    async def review_draft(self, context_package: dict, draft: str) -> DraftReviewOutput:
+        if self._review is not None:
+            return self._review
+        return DraftReviewOutput(
+            narrative_conflicts=[],
+            quality_issues=[],
+            has_continuity_conflicts=False,
+            verdict="pass",
+        )
+
+    async def revise_draft(self, context_package: dict, draft: str, conflict: dict, selected_direction: str) -> LocalRevisionOutput:
+        if self._revision is not None:
+            return self._revision
+        return LocalRevisionOutput(
+            candidate_content=draft,
+            scope={"type": "paragraph", "start": 1, "end": 1},
+            diff={"old": draft, "new": draft},
+            plan_patch={"adjustment": "none"},
+            expanded_scope=False,
+            expansion_reason="",
+        )
 
 
 class DeepSeekWritingGenerator(BaseWritingGenerator):
@@ -182,6 +263,123 @@ class DeepSeekWritingGenerator(BaseWritingGenerator):
 3. 直接输出完整的新正文，不要任何解释
 4. 不要改变正文的整体风格和叙事视角"""
         return await self._call_llm_text(prompt)
+
+    async def generate_plot_plan(self, foundation: dict, plot_unit: dict, published_canon: dict) -> dict:
+        prompt = f"""根据以下信息生成剧情规划方案，以 JSON 格式返回。
+
+author_foundation：
+{json.dumps(foundation, ensure_ascii=False)}
+
+plot_unit：
+{json.dumps(plot_unit, ensure_ascii=False)}
+
+published_canon：
+{json.dumps(published_canon, ensure_ascii=False)}
+
+返回 JSON 字段：
+- starting_state: 当前已发布事实和人物状态
+- stage_goal: 本剧情单元结束时必须达到的状态
+- core_conflict: 核心冲突
+- key_turns: 关键转折点数组，每项包含 order, event, required
+- progression: 推进数组，每项包含 order, chapter_position, purpose, scenes
+- character_changes: 角色变化数组，每项包含 character, from, to
+- foreshadowing: 伏笔数组，每项包含 action, item, chapter_position
+- must_complete: 必须完成事项数组
+- optional: 可选事项数组
+- completion_criteria: 完成判断标准数组
+
+只返回 JSON。"""
+        return await self._call_validated_json(prompt, PlotPlanOutput)
+
+    async def generate_draft_result(self, context_package: dict) -> DraftGenerationOutput:
+        plot_plan = context_package.get("plot_plan", {})
+        prompt = f"""根据以下剧情规划方案生成正文草稿，以 JSON 格式返回。
+
+剧情规划：
+{json.dumps(plot_plan, ensure_ascii=False)}
+
+返回 JSON 字段：
+- status: "draft_ready" | "decision_required" | "unsafe_planning"
+- draft: 正文草稿
+- conflict: 如果遇到冲突，提供冲突对象（可选），包含：
+  - source: "during_generation" | "during_review"
+  - core_conflict: 核心冲突描述
+  - options: 2-3 个不同方案，每项含 label, action, consequence, affected_future_scope
+  - recommended_index: 推荐方案索引
+  - recommendation_reason: 推荐理由
+  - impact_scope: 影响范围
+- unsafe_reason: 如果状态为 unsafe_planning，说明原因
+
+当模型认为方案不足 2 个可执行选项时，将 status 设为 unsafe_planning。
+只返回 JSON。"""
+        return await self._call_validated_json(prompt, DraftGenerationOutput)
+
+    async def review_draft(self, context_package: dict, draft: str) -> DraftReviewOutput:
+        plot_plan = context_package.get("plot_plan", {})
+        prompt = f"""请审查以下正文草稿是否存在冲突，以 JSON 格式返回。
+
+plot_plan：
+{json.dumps(plot_plan, ensure_ascii=False)}
+
+draft：
+{draft}
+
+返回 JSON 字段：
+- narrative_conflicts: 叙事冲突数组，每项包含 source, core_conflict, options, recommended_index, recommendation_reason, impact_scope
+- quality_issues: 质量问题数组
+- has_continuity_conflicts: 是否有连续性冲突（布尔）
+- verdict: "pass" | "revise"
+
+只返回 JSON。"""
+        return await self._call_validated_json(prompt, DraftReviewOutput)
+
+    async def revise_draft(self, context_package: dict, draft: str, conflict: dict, selected_direction: str) -> LocalRevisionOutput:
+        prompt = f"""根据冲突解决方案修订正文草稿，以 JSON 格式返回。
+
+draft：
+{draft}
+
+conflict：
+{json.dumps(conflict, ensure_ascii=False)}
+
+selected_direction：{selected_direction}
+
+impact_scope：
+{json.dumps(conflict.get("impact_scope", {}), ensure_ascii=False)}
+
+返回 JSON 字段：
+- candidate_content: 修订后的正文内容
+- scope: 修订范围（如 type, start, end）
+- diff: 差异描述（如 old, new）
+- plan_patch: 规划补丁
+- expanded_scope: 是否扩大了影响范围（布尔）
+- expansion_reason: 扩大原因
+
+只返回 JSON。"""
+        return await self._call_validated_json(prompt, LocalRevisionOutput)
+
+    async def _call_validated_json(self, prompt: str, model_class: type[BaseModel]) -> Any:
+        agent = create_novel_agent(
+            model_type="flash",
+            tools=[],
+            system_prompt="你是一个小说创作辅助AI，只返回JSON格式的输出。",
+            state_schema=NovelAgentState,
+        )
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": prompt}], "novel_id": 0, "chapter_id": 0, "user_id": 0, "pending_confirmations": []},
+            {"configurable": {"thread_id": "writer-plot-planning"}},
+        )
+        content = result["messages"][-1].content if result.get("messages") else ""
+        try:
+            data = json.loads(content) if content.strip() else {}
+        except json.JSONDecodeError as e:
+            raise AIProtocolError(f"JSON parse error: {e}") from e
+        try:
+            if issubclass(model_class, BaseModel) and model_class is not dict:
+                return model_class.model_validate(data)
+            return data
+        except Exception as e:
+            raise AIProtocolError(f"Pydantic validation error: {e}") from e
 
     async def _call_llm(self, prompt: str) -> dict:
         """调用 DeepSeek 返回 JSON。失败时返回空字典。"""
