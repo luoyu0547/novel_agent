@@ -74,6 +74,9 @@ class WritingRun(Base):
     has_pending_repairs: Mapped[bool] = mapped_column(default=False)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     accepted_at: Mapped[Optional[datetime.datetime]] = mapped_column(nullable=True)
+    decision_id: Mapped[Optional[int]] = mapped_column(ForeignKey("planning_decisions.id"), nullable=True)
+    context_snapshot_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    planning_blocked: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now)
     updated_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now, onupdate=datetime.datetime.now)
 

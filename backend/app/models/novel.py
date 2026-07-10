@@ -25,6 +25,8 @@ class Novel(Base):
     characters = relationship("CharacterProfile", back_populates="novel", cascade="all, delete-orphan")
     world_settings = relationship("WorldSetting", back_populates="novel", cascade="all, delete-orphan")
     blueprints = relationship("NovelBlueprint", back_populates="novel", cascade="all, delete-orphan")
+    author_foundation = relationship("AuthorFoundation", back_populates="novel", uselist=False, cascade="all, delete-orphan")
+    plot_units = relationship("PlotUnit", back_populates="novel", cascade="all, delete-orphan")
 
 
 class Chapter(Base):

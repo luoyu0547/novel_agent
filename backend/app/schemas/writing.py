@@ -84,6 +84,9 @@ class WritingRunOut(BaseModel):
     has_pending_repairs: bool = False
     error_message: Optional[str] = None
     accepted_at: Optional[datetime] = None
+    decision_id: Optional[int] = None
+    context_snapshot_json: dict[str, Any] = {}
+    planning_blocked: bool = False
     created_at: datetime
     updated_at: datetime
 
