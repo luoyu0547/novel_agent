@@ -19,31 +19,6 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.create_table('planning_decisions',
-    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('novel_id', sa.Integer(), nullable=False),
-    sa.Column('plot_unit_id', sa.Integer(), nullable=True),
-    sa.Column('plot_plan_revision_id', sa.Integer(), nullable=True),
-    sa.Column('chapter_brief_id', sa.Integer(), nullable=True),
-    sa.Column('writing_run_id', sa.Integer(), nullable=True),
-    sa.Column('source', sa.String(), nullable=False),
-    sa.Column('status', sa.String(), nullable=False),
-    sa.Column('conflict_summary', sa.Text(), nullable=False),
-    sa.Column('evidence_json', sa.JSON(), nullable=False),
-    sa.Column('options_json', sa.JSON(), nullable=False),
-    sa.Column('recommended_index', sa.Integer(), nullable=False),
-    sa.Column('recommendation_reason', sa.Text(), nullable=False),
-    sa.Column('impact_scope_json', sa.JSON(), nullable=False),
-    sa.Column('created_at', sa.DateTime(), nullable=False),
-    sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['chapter_brief_id'], ['chapter_briefs.id'], ),
-    sa.ForeignKeyConstraint(['novel_id'], ['novels.id'], ),
-    sa.ForeignKeyConstraint(['plot_plan_revision_id'], ['plot_plan_revisions.id'], ),
-    sa.ForeignKeyConstraint(['plot_unit_id'], ['plot_units.id'], ),
-    sa.ForeignKeyConstraint(['writing_run_id'], ['writing_runs.id'], ),
-    sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index(op.f('ix_planning_decisions_novel_id'), 'planning_decisions', ['novel_id'], unique=False)
     op.create_table('author_foundations',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('novel_id', sa.Integer(), nullable=False),
@@ -58,27 +33,6 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_author_foundations_novel_id'), 'author_foundations', ['novel_id'], unique=True)
-    op.create_table('draft_revisions',
-    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('novel_id', sa.Integer(), nullable=False),
-    sa.Column('writing_run_id', sa.Integer(), nullable=True),
-    sa.Column('parent_revision_id', sa.Integer(), nullable=True),
-    sa.Column('decision_id', sa.Integer(), nullable=True),
-    sa.Column('base_content', sa.Text(), nullable=False),
-    sa.Column('candidate_content', sa.Text(), nullable=False),
-    sa.Column('scope_json', sa.JSON(), nullable=False),
-    sa.Column('diff_json', sa.JSON(), nullable=False),
-    sa.Column('reason', sa.Text(), nullable=False),
-    sa.Column('status', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(), nullable=False),
-    sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['decision_id'], ['planning_decisions.id'], ),
-    sa.ForeignKeyConstraint(['novel_id'], ['novels.id'], ),
-    sa.ForeignKeyConstraint(['parent_revision_id'], ['draft_revisions.id'], ),
-    sa.ForeignKeyConstraint(['writing_run_id'], ['writing_runs.id'], ),
-    sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index(op.f('ix_draft_revisions_novel_id'), 'draft_revisions', ['novel_id'], unique=False)
     op.create_table('author_foundation_revisions',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('novel_id', sa.Integer(), nullable=False),
@@ -132,10 +86,56 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_plot_plan_revisions_novel_id'), 'plot_plan_revisions', ['novel_id'], unique=False)
     op.create_index(op.f('ix_plot_plan_revisions_plot_unit_id'), 'plot_plan_revisions', ['plot_unit_id'], unique=False)
+    op.create_table('planning_decisions',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('novel_id', sa.Integer(), nullable=False),
+    sa.Column('plot_unit_id', sa.Integer(), nullable=True),
+    sa.Column('plot_plan_revision_id', sa.Integer(), nullable=True),
+    sa.Column('chapter_brief_id', sa.Integer(), nullable=True),
+    sa.Column('writing_run_id', sa.Integer(), nullable=True),
+    sa.Column('source', sa.String(), nullable=False),
+    sa.Column('status', sa.String(), nullable=False),
+    sa.Column('conflict_summary', sa.Text(), nullable=False),
+    sa.Column('evidence_json', sa.JSON(), nullable=False),
+    sa.Column('options_json', sa.JSON(), nullable=False),
+    sa.Column('recommended_index', sa.Integer(), nullable=False),
+    sa.Column('recommendation_reason', sa.Text(), nullable=False),
+    sa.Column('impact_scope_json', sa.JSON(), nullable=False),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), nullable=False),
+    sa.ForeignKeyConstraint(['chapter_brief_id'], ['chapter_briefs.id'], ),
+    sa.ForeignKeyConstraint(['novel_id'], ['novels.id'], ),
+    sa.ForeignKeyConstraint(['plot_plan_revision_id'], ['plot_plan_revisions.id'], ),
+    sa.ForeignKeyConstraint(['plot_unit_id'], ['plot_units.id'], ),
+    sa.ForeignKeyConstraint(['writing_run_id'], ['writing_runs.id'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_planning_decisions_novel_id'), 'planning_decisions', ['novel_id'], unique=False)
+    op.create_table('draft_revisions',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('novel_id', sa.Integer(), nullable=False),
+    sa.Column('writing_run_id', sa.Integer(), nullable=True),
+    sa.Column('parent_revision_id', sa.Integer(), nullable=True),
+    sa.Column('decision_id', sa.Integer(), nullable=True),
+    sa.Column('base_content', sa.Text(), nullable=False),
+    sa.Column('candidate_content', sa.Text(), nullable=False),
+    sa.Column('scope_json', sa.JSON(), nullable=False),
+    sa.Column('diff_json', sa.JSON(), nullable=False),
+    sa.Column('reason', sa.Text(), nullable=False),
+    sa.Column('status', sa.String(), nullable=False),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), nullable=False),
+    sa.ForeignKeyConstraint(['decision_id'], ['planning_decisions.id'], ),
+    sa.ForeignKeyConstraint(['novel_id'], ['novels.id'], ),
+    sa.ForeignKeyConstraint(['parent_revision_id'], ['draft_revisions.id'], ),
+    sa.ForeignKeyConstraint(['writing_run_id'], ['writing_runs.id'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_draft_revisions_novel_id'), 'draft_revisions', ['novel_id'], unique=False)
     with op.batch_alter_table("writing_runs", schema=None) as batch_op:
         batch_op.add_column(sa.Column('decision_id', sa.Integer(), nullable=True))
-        batch_op.add_column(sa.Column('context_snapshot_json', sa.JSON(), nullable=False))
-        batch_op.add_column(sa.Column('planning_blocked', sa.Boolean(), nullable=False))
+        batch_op.add_column(sa.Column('context_snapshot_json', sa.JSON(), nullable=False, server_default=sa.text("'{}'")))
+        batch_op.add_column(sa.Column('planning_blocked', sa.Boolean(), nullable=False, server_default=sa.text("0")))
         batch_op.create_foreign_key("fk_writing_runs_decision_id", "planning_decisions", ["decision_id"], ["id"])
 
 
