@@ -7,6 +7,8 @@ from app.ai.plot_planning import (
     DraftGenerationOutput,
 )
 from app.ai.writer import FakePhase3WritingGenerator
+from app.core.exceptions import NotFound
+from app.models.novel import Novel, Chapter
 from app.models.plot_planning import (
     AuthorFoundation,
     AuthorFoundationRevision,
@@ -14,6 +16,8 @@ from app.models.plot_planning import (
     PlotPlanRevision,
     PlanningDecision,
 )
+from app.models.user import User
+from app.models.writing import ChapterPlan, ChapterBrief
 from app.schemas.plot_planning import ChooseDecisionRequest
 
 
@@ -145,3 +149,227 @@ async def test_fake_generation_can_return_decision_required():
     result = await generator.generate_draft_result({"plot_plan": {}})
     assert result.status == "decision_required"
     assert result.conflict is not None
+
+
+# ---- Service-level tests (Task 3: Plot Planning Service & Context Package) ----
+
+
+@pytest.mark.asyncio
+async def test_foundation_update_creates_history_without_decision(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.commit()
+
+    from app.services.plot_planning_service import PlotPlanningService
+
+    service = PlotPlanningService(db=db, user_id=1, novel_id=1, generator=FakePhase3WritingGenerator())
+    first = await service.update_foundation(
+        {"outline": "第一版大纲", "current_intent": "调查", "stage_goal": "找到证据", "constraints_json": {}},
+        change_reason="initial",
+    )
+    assert first.version == 1
+    second = await service.update_foundation(
+        {"stage_goal": "找到证据并保护证人"},
+        change_reason="作者调整阶段目标",
+    )
+    assert second.version == 2
+    revisions = await service.list_foundation_revisions()
+    assert [r.version for r in revisions] == [2, 1]
+    assert await service.list_pending_decisions() == []
+
+
+@pytest.mark.asyncio
+async def test_foundation_update_marks_active_plans_stale(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.commit()
+
+    from app.services.plot_planning_service import PlotPlanningService
+
+    service = PlotPlanningService(db=db, user_id=1, novel_id=1, generator=FakePhase3WritingGenerator())
+    await service.update_foundation(
+        {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
+        change_reason="initial",
+    )
+    unit = await service.create_plot_unit({
+        "title": "第一卷", "scope_type": "volume", "start_position": 1, "end_position": 10,
+    })
+    plan = await service.generate_plan(unit.id)
+    await service.confirm_plan(unit.id, plan.id)
+    await service.update_foundation({"stage_goal": "新目标"}, change_reason="调整")
+    revisions = await service.list_plan_revisions(unit.id)
+    stale = next(r for r in revisions if r.id == plan.id)
+    assert stale.status == "stale"
+
+
+@pytest.mark.asyncio
+async def test_plot_unit_creation_and_ownership(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.commit()
+
+    from app.services.plot_planning_service import PlotPlanningService
+
+    service = PlotPlanningService(db=db, user_id=1, novel_id=1, generator=FakePhase3WritingGenerator())
+    await service.update_foundation(
+        {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
+        change_reason="initial",
+    )
+    unit = await service.create_plot_unit({
+        "title": "第一卷", "scope_type": "volume", "start_position": 1, "end_position": 10,
+    })
+    assert unit.title == "第一卷"
+    assert unit.novel_id == 1
+    units = await service.list_plot_units()
+    assert len(units) == 1
+    fetched = await service.get_plot_unit(unit.id)
+    assert fetched.id == unit.id
+
+
+@pytest.mark.asyncio
+async def test_generate_plan_creates_draft_revision(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.commit()
+
+    from app.services.plot_planning_service import PlotPlanningService
+
+    service = PlotPlanningService(db=db, user_id=1, novel_id=1, generator=FakePhase3WritingGenerator())
+    await service.update_foundation(
+        {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
+        change_reason="initial",
+    )
+    unit = await service.create_plot_unit({
+        "title": "第一卷", "scope_type": "volume", "start_position": 1, "end_position": 10,
+    })
+    plan = await service.generate_plan(plot_unit_id=unit.id, author_input="调查主线")
+    assert plan.status == "draft"
+    assert plan.plot_unit_id == unit.id
+
+
+@pytest.mark.asyncio
+async def test_confirm_plan_archives_previous_and_activates_selected(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.commit()
+
+    from app.services.plot_planning_service import PlotPlanningService
+
+    service = PlotPlanningService(db=db, user_id=1, novel_id=1, generator=FakePhase3WritingGenerator())
+    await service.update_foundation(
+        {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
+        change_reason="initial",
+    )
+    unit = await service.create_plot_unit({
+        "title": "第一卷", "scope_type": "volume", "start_position": 1, "end_position": 10,
+    })
+    plan1 = await service.generate_plan(unit.id)
+    confirmed1 = await service.confirm_plan(unit.id, plan1.id)
+    assert confirmed1.status == "active"
+    plan2 = await service.generate_plan(unit.id)
+    confirmed2 = await service.confirm_plan(unit.id, plan2.id)
+    assert confirmed2.status == "active"
+    revisions = await service.list_plan_revisions(unit.id)
+    superseded_count = sum(1 for r in revisions if r.status == "superseded")
+    active_count = sum(1 for r in revisions if r.status == "active")
+    assert superseded_count == 1
+    assert active_count == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_plan_rolls_back_on_generator_error(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.commit()
+
+    from app.services.plot_planning_service import PlotPlanningService
+
+    class BadGenerator(FakePhase3WritingGenerator):
+        async def generate_plot_plan(self, foundation, plot_unit, published_canon):
+            raise ValueError("模拟失败")
+
+    service = PlotPlanningService(db=db, user_id=1, novel_id=1, generator=BadGenerator())
+    await service.update_foundation(
+        {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
+        change_reason="initial",
+    )
+    unit = await service.create_plot_unit({
+        "title": "第一卷", "scope_type": "volume", "start_position": 1, "end_position": 10,
+    })
+    unit_id = unit.id
+    with pytest.raises(ValueError, match="模拟失败"):
+        await service.generate_plan(unit_id)
+    plans = await service.list_plan_revisions(unit_id)
+    assert len(plans) == 0
+
+
+@pytest.mark.asyncio
+async def test_planning_service_raises_not_found_for_wrong_novel(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.commit()
+
+    from app.services.plot_planning_service import PlotPlanningService
+
+    service = PlotPlanningService(db=db, user_id=1, novel_id=999, generator=FakePhase3WritingGenerator())
+    with pytest.raises(NotFound):
+        await service.create_plot_unit({
+            "title": "测试", "scope_type": "volume", "start_position": 1, "end_position": 1,
+        })
+
+
+@pytest.mark.asyncio
+async def test_context_contains_only_locked_chapters_and_plan_snapshot(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说", description="描述", genre="推理", style_guide="克制冷调")
+    db.add(novel)
+    locked = Chapter(id=1, novel_id=1, title="已发布章", content="不可修改事实", status="locked")
+    draft_ch = Chapter(id=2, novel_id=1, title="未发布章", content="候选正文", status="draft")
+    db.add_all([locked, draft_ch])
+    chapter_plan = ChapterPlan(id=1, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(chapter_plan)
+    brief = ChapterBrief(id=1, novel_id=1, chapter_plan_id=1, brief_json={"writing_goal": "测试"}, length_contract_json={}, status="ready")
+    db.add(brief)
+    foundation = AuthorFoundation(id=1, novel_id=1, outline="大纲", current_intent="意图", stage_goal="阶段目标", constraints_json={}, version=1)
+    db.add(foundation)
+    await db.flush()
+    revision = AuthorFoundationRevision(id=1, novel_id=1, foundation_id=1, version=1, snapshot_json={"outline": "大纲"}, change_reason="initial")
+    db.add(revision)
+    await db.flush()
+    unit = PlotUnit(id=1, novel_id=1, title="单元", scope_type="volume", start_position=1, end_position=5, foundation_revision_id=1)
+    db.add(unit)
+    await db.flush()
+    plot_plan = PlotPlanRevision(
+        id=1, novel_id=1, plot_unit_id=1, foundation_revision_id=1, version=1,
+        plan_json={"core_conflict": "冲突"}, status="active",
+    )
+    db.add(plot_plan)
+    await db.commit()
+
+    from app.services.context_package_service import ContextPackageService
+
+    context = await ContextPackageService(db, user_id=1, novel_id=1).build_for_brief(
+        brief_id=1,
+        plot_plan_revision_id=1,
+        author_input="本次让调查转向码头",
+    )
+    chapter_ids = [item["id"] for item in context["published_canon"]["chapters"]]
+    assert chapter_ids == [1]
+    assert "候选正文" not in str(context["published_canon"])
+    assert context["snapshot"]["plot_plan_revision_id"] == 1
+    assert context["author_input"] == "本次让调查转向码头"
