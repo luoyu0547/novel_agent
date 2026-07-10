@@ -8,6 +8,7 @@ from app.core.security import get_current_user
 from app.schemas.novel import (
     ChapterCreate,
     ChapterOut,
+    ChapterPublishRequest,
     ChapterUpdate,
     NovelCreate,
     NovelListItem,
@@ -112,3 +113,16 @@ async def delete_chapter(
 ):
     await NovelService(db).delete_chapter(current_user.id, novel_id, chapter_id)
     return ApiResponse.success(message="章节删除成功")
+
+
+@router.put("/{novel_id}/chapters/{chapter_id}/publish")
+async def publish_chapter(
+    novel_id: int,
+    chapter_id: int,
+    body: ChapterPublishRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    svc = NovelService(db)
+    chapter = await svc.publish_chapter(current_user.id, novel_id, chapter_id)
+    return ApiResponse.success(data=ChapterOut.model_validate(chapter).model_dump(), message="章节已发布")

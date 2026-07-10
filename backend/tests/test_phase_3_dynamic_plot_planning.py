@@ -6,6 +6,7 @@ from app.ai.plot_planning import (
     DecisionOption,
     DraftGenerationOutput,
     DraftReviewOutput,
+    LocalRevisionOutput,
 )
 from app.ai.quality_gate import FakeQualityGateAgent
 from app.ai.writer import FakePhase3WritingGenerator
@@ -14,6 +15,7 @@ from app.models.novel import Novel, Chapter
 from app.models.plot_planning import (
     AuthorFoundation,
     AuthorFoundationRevision,
+    DraftRevision,
     PlotUnit,
     PlotPlanRevision,
     PlanningDecision,
@@ -22,6 +24,33 @@ from app.models.user import User
 from app.models.writing import ChapterPlan, ChapterBrief, WritingRun
 from app.schemas.plot_planning import ChooseDecisionRequest
 from app.services.writing_service import WritingService
+
+
+@pytest.fixture
+async def novel_and_headers(client):
+    response = await client.post("/api/v1/auth/register", json={"username": "p6_user", "password": "password123"})
+    token = response.json()["data"]["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    response = await client.post("/api/v1/novels", headers=headers, json={"title": "P6测试", "description": "决策与发布测试", "genre": "古风"})
+    novel = response.json()["data"]
+    return novel, headers
+
+
+async def create_locked_chapter(client, novel_id, headers, content="发布事实"):
+    response = await client.post(
+        f"/api/v1/novels/{novel_id}/chapters",
+        headers=headers,
+        json={"title": "已发布章", "content": content, "status": "draft"},
+    )
+    chapter = response.json()["data"]
+    from app.core.database import async_session_factory
+    from app.repositories.novel_repo import ChapterRepo
+    async with async_session_factory() as db:
+        repo = ChapterRepo(db)
+        ch = await repo.get_by_id(chapter["id"])
+        await repo.update(ch, title=None, content=None, summary=None, status="locked")
+    response = await client.get(f"/api/v1/novels/{novel_id}/chapters/{chapter['id']}", headers=headers)
+    return response.json()["data"]
 
 
 @pytest.mark.asyncio
@@ -576,3 +605,351 @@ async def test_review_does_not_turn_style_issue_into_decision(db):
     assert result["decision"] is None
     assert len(result["review_issues"]) == 1
     assert await PlotPlanningService(db, 1, 1).list_pending_decisions() == []
+
+
+# ---- Task 6: Decision choose/apply, locked chapter, publish boundary ----
+
+
+@pytest.mark.asyncio
+async def test_choose_decision_preserves_unaffected_text_and_creates_new_plan(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.flush()
+
+    from app.services.plot_planning_service import PlotPlanningService
+    from app.repositories.plot_planning_repo import PlotPlanningRepo
+
+    foundation = await PlotPlanningService(db, 1, 1).update_foundation(
+        {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
+        change_reason="initial",
+    )
+
+    repo = PlotPlanningRepo(db)
+    revision = await repo.get_latest_foundation_revision(1)
+    unit = await PlotPlanningService(db, 1, 1).create_plot_unit({
+        "title": "第一卷", "scope_type": "volume", "start_position": 1, "end_position": 10,
+    })
+    plan = await PlotPlanningService(db, 1, 1).generate_plan(unit.id)
+    confirmed = await PlotPlanningService(db, 1, 1).confirm_plan(unit.id, plan.id)
+    assert confirmed.status == "active"
+
+    # Create a writing run with target_chapter_id so it can be referenced
+    from app.models.writing import ChapterBrief, ChapterPlan, WritingRun
+    cp = ChapterPlan(id=10, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(cp)
+    await db.flush()
+    brief = ChapterBrief(id=10, novel_id=1, chapter_plan_id=10, brief_json={"writing_goal": "测试"}, length_contract_json={}, status="ready")
+    db.add(brief)
+    await db.flush()
+    run = WritingRun(
+        id=10, novel_id=1, chapter_brief_id=10, context_package_id=1,
+        status="completed", draft_content="开头不变。旧冲突场景。结尾不变。",
+        planning_blocked=True,
+        context_snapshot_json={"plot_plan_revision_id": confirmed.id},
+    )
+    db.add(run)
+    await db.flush()
+
+    # Create a pending decision linked to this run
+    decision = await repo.create_decision(1, {
+        "plot_unit_id": unit.id,
+        "plot_plan_revision_id": confirmed.id,
+        "writing_run_id": 10,
+        "source": "during_generation",
+        "status": "pending",
+        "conflict_summary": "冲突需要解决",
+        "evidence_json": {},
+        "options_json": [
+            {"label": "补充因果", "action": "补充", "consequence": "保留事实"},
+            {"label": "改写未来", "action": "改写", "consequence": "延后揭示"},
+        ],
+        "recommended_index": 0,
+        "recommendation_reason": "最小影响",
+        "impact_scope_json": {"type": "paragraph", "start": 2, "end": 2},
+    })
+    await db.commit()
+
+    service = PlotPlanningService(db=db, user_id=1, novel_id=1, generator=FakePhase3WritingGenerator(
+        revision=LocalRevisionOutput(
+            candidate_content="开头不变。修订后的冲突场景。结尾不变。",
+            scope={"type": "paragraph", "start": 2, "end": 2},
+            diff={"removed": ["旧冲突场景"], "added": ["修订后的冲突场景"]},
+            plan_patch={"progression": [{"order": 2, "purpose": "承接补充因果"}]},
+            expanded_scope=False,
+            expansion_reason="",
+        )
+    ))
+    decision, new_plan, revision, run = await service.choose_decision(decision.id, option_index=0)
+    assert decision.status == "resolved"
+    assert new_plan.version == 2
+    assert new_plan.status == "active"
+    assert revision.status == "candidate"
+    assert revision.candidate_content.startswith("开头不变。")
+    assert revision.candidate_content.endswith("结尾不变。")
+    assert run.planning_blocked is False
+
+
+@pytest.mark.asyncio
+async def test_choose_decision_rolls_back_on_generator_failure(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.flush()
+
+    from app.services.plot_planning_service import PlotPlanningService
+    from app.repositories.plot_planning_repo import PlotPlanningRepo
+
+    await PlotPlanningService(db, 1, 1).update_foundation(
+        {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
+        change_reason="initial",
+    )
+    repo = PlotPlanningRepo(db)
+    unit = await PlotPlanningService(db, 1, 1).create_plot_unit({
+        "title": "第一卷", "scope_type": "volume", "start_position": 1, "end_position": 10,
+    })
+    plan = await PlotPlanningService(db, 1, 1).generate_plan(unit.id)
+    confirmed = await PlotPlanningService(db, 1, 1).confirm_plan(unit.id, plan.id)
+
+    from app.models.writing import ChapterPlan, ChapterBrief, WritingRun
+    cp = ChapterPlan(id=20, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(cp)
+    await db.flush()
+    brief = ChapterBrief(id=20, novel_id=1, chapter_plan_id=20, brief_json={"writing_goal": "测试"}, length_contract_json={}, status="ready")
+    db.add(brief)
+    await db.flush()
+    run = WritingRun(
+        id=20, novel_id=1, chapter_brief_id=20, context_package_id=1,
+        status="completed", draft_content="草稿内容",
+        planning_blocked=True,
+        context_snapshot_json={"plot_plan_revision_id": confirmed.id},
+    )
+    db.add(run)
+    await db.flush()
+
+    decision = await repo.create_decision(1, {
+        "plot_unit_id": unit.id, "plot_plan_revision_id": confirmed.id, "writing_run_id": 20,
+        "source": "during_generation", "status": "pending",
+        "conflict_summary": "冲突", "evidence_json": {},
+        "options_json": [{"label": "A", "action": "a", "consequence": "c"}, {"label": "B", "action": "b", "consequence": "d"}],
+        "recommended_index": 0, "recommendation_reason": "最小", "impact_scope_json": {},
+    })
+    await db.commit()
+
+    class BadGenerator(FakePhase3WritingGenerator):
+        async def revise_draft(self, context_package, draft, conflict, selected_direction):
+            raise ValueError("AI revision failed")
+
+    service = PlotPlanningService(db=db, user_id=1, novel_id=1, generator=BadGenerator())
+    with pytest.raises(ValueError, match="AI revision failed"):
+        await service.choose_decision(decision.id, option_index=0)
+
+    # Decision should still be pending, old plan still active
+    still_pending = await repo.get_decision(decision.id, 1)
+    assert still_pending.status == "pending"
+    old_plan = await repo.get_plan_revision(confirmed.id, 1)
+    assert old_plan.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_locked_chapter_rejects_update_accept_and_delete(client, novel_and_headers):
+    novel, headers = novel_and_headers
+    chapter = await create_locked_chapter(client, novel["id"], headers, "发布事实")
+    update = await client.put(
+        f"/api/v1/novels/{novel['id']}/chapters/{chapter['id']}",
+        headers=headers,
+        json={"content": "试图改写"},
+    )
+    assert update.status_code == 400
+    delete = await client.delete(
+        f"/api/v1/novels/{novel['id']}/chapters/{chapter['id']}",
+        headers=headers,
+    )
+    assert delete.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_accept_writing_run_rejects_decision_required(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    from app.models.writing import ChapterPlan, ChapterBrief, WritingRun
+    cp = ChapterPlan(id=30, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(cp)
+    brief = ChapterBrief(id=30, novel_id=1, chapter_plan_id=30, brief_json={"writing_goal": "测试"}, length_contract_json={}, status="ready")
+    db.add(brief)
+    run = WritingRun(
+        id=30, novel_id=1, chapter_brief_id=30, context_package_id=1,
+        status="decision_required", draft_content="草稿",
+    )
+    db.add(run)
+    await db.commit()
+
+    svc = WritingService(db=db, user_id=1, novel_id=1)
+    from app.core.exceptions import AppException
+    with pytest.raises(AppException, match="决策"):
+        await svc.accept_writing_run(30)
+
+
+@pytest.mark.asyncio
+async def test_accept_writing_run_rejects_planning_blocked(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    from app.models.writing import ChapterPlan, ChapterBrief, WritingRun
+    cp = ChapterPlan(id=31, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(cp)
+    brief = ChapterBrief(id=31, novel_id=1, chapter_plan_id=31, brief_json={"writing_goal": "测试"}, length_contract_json={}, status="ready")
+    db.add(brief)
+    run = WritingRun(
+        id=31, novel_id=1, chapter_brief_id=31, context_package_id=1,
+        status="completed", draft_content="草稿",
+        planning_blocked=True,
+    )
+    db.add(run)
+    await db.commit()
+
+    svc = WritingService(db=db, user_id=1, novel_id=1)
+    from app.core.exceptions import AppException
+    with pytest.raises(AppException, match="规划阻塞"):
+        await svc.accept_writing_run(31)
+
+
+@pytest.mark.asyncio
+async def test_accept_writing_run_rejects_write_to_locked_chapter(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    chapter = Chapter(id=1, novel_id=1, title="已发布", content="事实", status="locked")
+    db.add(chapter)
+    await db.flush()
+
+    from app.models.writing import ChapterPlan, ChapterBrief, WritingRun
+    cp = ChapterPlan(id=33, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(cp)
+    brief = ChapterBrief(id=33, novel_id=1, chapter_plan_id=33, brief_json={"writing_goal": "测试"}, length_contract_json={}, status="ready")
+    db.add(brief)
+    run = WritingRun(
+        id=33, novel_id=1, chapter_brief_id=33,
+        context_package_id=1,
+        status="completed", draft_content="新草稿",
+        target_chapter_id=1,
+    )
+    db.add(run)
+    await db.commit()
+
+    svc = WritingService(db=db, user_id=1, novel_id=1)
+    from app.core.exceptions import AppException
+    with pytest.raises(AppException, match="已发布章节不可覆盖"):
+        await svc.accept_writing_run(33)
+
+
+@pytest.mark.asyncio
+async def test_publish_chapter_rejects_locked(client, novel_and_headers):
+    novel, headers = novel_and_headers
+    chapter = await create_locked_chapter(client, novel["id"], headers, "已发布")
+    resp = await client.put(
+        f"/api/v1/novels/{novel['id']}/chapters/{chapter['id']}/publish",
+        headers=headers,
+        json={},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_publish_chapter_rejects_pending_decisions(client, novel_and_headers):
+    novel, headers = novel_and_headers
+    # Create a draft chapter
+    resp = await client.post(
+        f"/api/v1/novels/{novel['id']}/chapters",
+        headers=headers,
+        json={"title": "待发布", "content": "草稿", "status": "draft"},
+    )
+    chapter = resp.json()["data"]
+
+    # Create a pending decision directly
+    from app.core.database import async_session_factory
+    from app.repositories.plot_planning_repo import PlotPlanningRepo
+    async with async_session_factory() as db:
+        repo = PlotPlanningRepo(db)
+        await repo.create_decision(novel["id"], {
+            "writing_run_id": 0,
+            "source": "during_generation",
+            "status": "pending",
+            "conflict_summary": "阻碍发布的冲突",
+            "evidence_json": {},
+            "options_json": [{"label": "A", "action": "a", "consequence": "c"}],
+            "recommended_index": 0,
+            "recommendation_reason": "唯一方案",
+            "impact_scope_json": {},
+        })
+        await db.commit()
+
+    resp = await client.put(
+        f"/api/v1/novels/{novel['id']}/chapters/{chapter['id']}/publish",
+        headers=headers,
+        json={},
+    )
+    assert resp.status_code == 400
+    assert "待处理决策" in resp.json()["message"] or "决策" in resp.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_publish_chapter_success(client, novel_and_headers):
+    novel, headers = novel_and_headers
+    resp = await client.post(
+        f"/api/v1/novels/{novel['id']}/chapters",
+        headers=headers,
+        json={"title": "可发布", "content": "正文内容", "status": "draft"},
+    )
+    chapter = resp.json()["data"]
+
+    resp = await client.put(
+        f"/api/v1/novels/{novel['id']}/chapters/{chapter['id']}/publish",
+        headers=headers,
+        json={},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "locked"
+
+
+@pytest.mark.asyncio
+async def test_update_foundation_supersedes_pending_decisions(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.commit()
+
+    from app.services.plot_planning_service import PlotPlanningService
+    from app.repositories.plot_planning_repo import PlotPlanningRepo
+
+    service = PlotPlanningService(db=db, user_id=1, novel_id=1, generator=FakePhase3WritingGenerator())
+    await service.update_foundation(
+        {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
+        change_reason="initial",
+    )
+    repo = PlotPlanningRepo(db)
+    decision = await repo.create_decision(1, {
+        "writing_run_id": 0,
+        "source": "during_generation",
+        "status": "pending",
+        "conflict_summary": "旧冲突",
+        "evidence_json": {},
+        "options_json": [{"label": "A", "action": "a", "consequence": "c"}],
+        "recommended_index": 0,
+        "recommendation_reason": "唯一",
+        "impact_scope_json": {},
+    })
+    await db.commit()
+
+    await service.update_foundation({"stage_goal": "新目标"}, change_reason="调整")
+    decisions = await service.list_decisions()
+    superseded = [d for d in decisions if d.status == "superseded"]
+    assert len(superseded) == 1
+    assert superseded[0].id == decision.id

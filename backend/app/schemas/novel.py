@@ -73,6 +73,10 @@ class ChapterUpdate(BaseModel):
     status: Optional[ChapterStatus] = None
 
 
+class ChapterPublishRequest(BaseModel):
+    pass
+
+
 class ChapterOut(BaseModel):
     id: int
     novel_id: int

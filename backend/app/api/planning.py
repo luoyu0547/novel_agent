@@ -12,6 +12,8 @@ from app.schemas.plot_planning import (
     AuthorFoundationOut,
     AuthorFoundationRevisionOut,
     AuthorFoundationUpdateRequest,
+    ChooseDecisionRequest,
+    DraftRevisionOut,
     PlotUnitCreateRequest,
     PlotUnitOut,
     PlotPlanRevisionOut,
@@ -160,3 +162,24 @@ async def get_planning_decision(
     svc = _get_service(db, current_user, novel_id)
     decision = await svc.get_decision(decision_id)
     return ApiResponse.success(data=PlanningDecisionOut.model_validate(decision).model_dump())
+
+
+@router.put("/planning-decisions/{decision_id}/choose")
+async def choose_decision(
+    novel_id: int,
+    decision_id: int,
+    body: ChooseDecisionRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    svc = _get_service(db, current_user, novel_id)
+    decision, new_plan, revision, run = await svc.choose_decision(
+        decision_id,
+        option_index=body.option_index,
+        custom_intent=body.custom_intent,
+    )
+    return ApiResponse.success(data={
+        "decision": PlanningDecisionOut.model_validate(decision).model_dump(),
+        "new_plan": PlotPlanRevisionOut.model_validate(new_plan).model_dump() if new_plan else None,
+        "draft_revision": DraftRevisionOut.model_validate(revision).model_dump(),
+    })

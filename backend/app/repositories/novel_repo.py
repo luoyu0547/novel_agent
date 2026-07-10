@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.exceptions import AppException
 from app.models.novel import Chapter, Novel
 
 
@@ -63,6 +64,8 @@ class ChapterRepo:
         return await self.db.get(Chapter, chapter_id)
 
     async def update(self, chapter: Chapter, title: Optional[str], content: Optional[str], summary: Optional[str], status: Optional[str]) -> Chapter:
+        if chapter.status == "locked":
+            raise AppException("已发布章节不可修改")
         if title is not None:
             chapter.title = title
         if content is not None:
@@ -76,5 +79,7 @@ class ChapterRepo:
         return chapter
 
     async def delete(self, chapter: Chapter) -> None:
+        if chapter.status == "locked":
+            raise AppException("已发布章节不可删除")
         await self.db.delete(chapter)
         await self.db.commit()

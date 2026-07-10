@@ -2,19 +2,21 @@
 
 import datetime
 import logging
+from copy import deepcopy
 from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.ai.plot_planning import ConflictOutput
+from app.ai.plot_planning import ConflictOutput, LocalRevisionOutput
 from app.ai.writer import BaseWritingGenerator, FakePhase3WritingGenerator
 from app.core.exceptions import BadRequest, NotFound
 from app.models.novel import Novel
 from app.models.plot_planning import (
     AuthorFoundation,
     AuthorFoundationRevision,
+    DraftRevision,
     PlanningDecision,
     PlotPlanRevision,
     PlotUnit,
@@ -99,6 +101,12 @@ class PlotPlanningService:
         })
 
         await self.repo.mark_plans_stale(self.novel_id)
+
+        pending = await self.repo.list_pending_decisions(self.novel_id)
+        for pd in pending:
+            pd.status = "superseded"
+            pd.updated_at = datetime.datetime.now()
+
         await self.db.commit()
         await self.db.refresh(foundation)
         return foundation
@@ -273,3 +281,116 @@ class PlotPlanningService:
         if not decision:
             raise NotFound("决策不存在")
         return decision
+
+    async def choose_decision(
+        self,
+        decision_id: int,
+        option_index: Optional[int] = None,
+        custom_intent: Optional[str] = None,
+    ) -> tuple[PlanningDecision, Optional[PlotPlanRevision], DraftRevision, Any]:
+        await self._ensure_owned_novel()
+        decision = await self.repo.get_decision(decision_id, self.novel_id)
+        if not decision:
+            raise NotFound("决策不存在")
+        if decision.status != "pending":
+            raise BadRequest("只能选择待处理的决策")
+
+        if option_index is not None:
+            if option_index < 0 or option_index >= len(decision.options_json):
+                raise BadRequest("无效的方案索引")
+            selected_direction = decision.options_json[option_index].get("action", "")
+        elif custom_intent:
+            selected_direction = custom_intent
+        else:
+            raise BadRequest("必须提供 option_index 或 custom_intent")
+
+        from app.repositories.writing_repo import WritingRunRepo
+        run_repo = WritingRunRepo(self.db)
+        run = await run_repo.get_by_id(decision.writing_run_id)
+
+        active_plan = None
+        if decision.plot_plan_revision_id:
+            active_plan = await self.repo.get_plan_revision(decision.plot_plan_revision_id, self.novel_id)
+        elif decision.plot_unit_id:
+            active_plan = await self.repo.get_active_plan(decision.plot_unit_id)
+
+        draft_revisions = await self.repo.list_draft_revisions_by_run(decision.writing_run_id)
+        parent_revision = draft_revisions[0] if draft_revisions else None
+
+        context = {
+            "conflict": {
+                "core_conflict": decision.conflict_summary,
+                "options": decision.options_json,
+                "recommended_index": decision.recommended_index,
+                "impact_scope": decision.impact_scope_json,
+            }
+        }
+
+        revision_result = await self.generator.revise_draft(
+            context_package=context,
+            draft=run.draft_content if run else "",
+            conflict={
+                "core_conflict": decision.conflict_summary,
+                "options": decision.options_json,
+                "impact_scope": decision.impact_scope_json,
+            },
+            selected_direction=selected_direction,
+        )
+
+        new_plan = None
+        if active_plan:
+            await self.repo.archive_active_plans(active_plan.plot_unit_id)
+            new_plan_json = self._deep_merge(active_plan.plan_json, revision_result.plan_patch)
+            new_plan = await self.repo.create_plan_revision(self.novel_id, {
+                "plot_unit_id": active_plan.plot_unit_id,
+                "foundation_revision_id": active_plan.foundation_revision_id,
+                "based_on_published_chapter_id": active_plan.based_on_published_chapter_id,
+                "version": active_plan.version + 1,
+                "plan_json": new_plan_json,
+                "change_reason": f"decision_resolved:{decision_id}",
+                "status": "active",
+            })
+
+        base_content = ""
+        if parent_revision:
+            base_content = parent_revision.candidate_content
+        elif run:
+            base_content = run.draft_content
+
+        draft_revision = await self.repo.create_draft_revision(self.novel_id, {
+            "writing_run_id": decision.writing_run_id,
+            "parent_revision_id": parent_revision.id if parent_revision else None,
+            "decision_id": decision_id,
+            "base_content": base_content,
+            "candidate_content": revision_result.candidate_content,
+            "scope_json": revision_result.scope,
+            "diff_json": revision_result.diff,
+            "reason": f"决策选择: {selected_direction}",
+            "status": "candidate",
+        })
+
+        decision.status = "resolved"
+        decision.updated_at = datetime.datetime.now()
+        await self.db.flush()
+
+        if run:
+            run.planning_blocked = False
+            run.draft_content = revision_result.candidate_content
+            await self.db.flush()
+
+        await self.db.commit()
+        await self.db.refresh(draft_revision)
+        if new_plan:
+            await self.db.refresh(new_plan)
+
+        return decision, new_plan, draft_revision, run
+
+    @staticmethod
+    def _deep_merge(base: dict, patch: dict) -> dict:
+        result = deepcopy(base)
+        for key, value in patch.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = PlotPlanningService._deep_merge(result[key], value)
+            else:
+                result[key] = value
+        return result

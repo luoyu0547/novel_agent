@@ -471,6 +471,8 @@ class WritingService:
             raise AppException("该写作运行已处理")
         if run.status == "decision_required":
             raise AppException("该写作运行存在待处理决策，请先解决决策")
+        if run.planning_blocked:
+            raise AppException("该写作运行存在规划阻塞，请先解决")
         if run.status != "completed":
             raise AppException("只能接受已完成的写作运行")
         if run.target_chapter_id:
@@ -479,6 +481,8 @@ class WritingService:
             chapter = result.scalar_one_or_none()
             if not chapter:
                 raise NotFound("目标章节不存在")
+            if chapter.status == "locked":
+                raise AppException("已发布章节不可覆盖")
             chapter.content = run.draft_content
         else:
             brief = await self.brief_repo.get_by_id(run.chapter_brief_id)
