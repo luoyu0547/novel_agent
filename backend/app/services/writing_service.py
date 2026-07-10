@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.ai.quality_gate import BaseQualityGateAgent, FakeQualityGateAgent
+from app.ai.quality_gate import BaseQualityGateAgent, FakeQualityGateAgent, DeepSeekQualityGateAgent
 from app.ai.writer import BaseWritingGenerator, DeepSeekWritingGenerator
 from app.services.quality_gate_service import QualityGateService
 from app.core.exceptions import NotFound, AppException
@@ -52,7 +52,7 @@ class WritingService:
         self.user_id = user_id
         self.novel_id = novel_id
         self.generator = generator or DeepSeekWritingGenerator()
-        self.gate_agent = gate_agent
+        self.gate_agent = gate_agent or DeepSeekQualityGateAgent()
         self.novel_repo = NovelRepo(db)
         self.blueprint_repo = BlueprintRepo(db)
         self.plan_repo = ChapterPlanRepo(db)
@@ -253,28 +253,36 @@ class WritingService:
             run.word_count = word_count
             run.gate_result_json = gate_result
             gate_svc = QualityGateService(db=self.db, agent=self.gate_agent)
-            gate_svc_result = {"gated": False, "has_pending_repairs": False, "rewrite_needed": False}
-            for retry in range(3):
+            gate_svc_result = {
+                "gated": False,
+                "has_pending_repairs": False,
+                "rewrite_needed": False,
+                "snapshot": gate_result,
+            }
+            max_iterations = 3
+            for retry in range(max_iterations):
                 gate_svc_result = await gate_svc.run(run, brief.brief_json, package)
-                if gate_svc_result.get("rewrite_needed"):
-                    package_with_feedback = dict(package)
+                run.gate_result_json = gate_svc_result.get("snapshot", run.gate_result_json)
+                if not gate_svc_result.get("rewrite_needed"):
+                    break
+                # Regenerate for the next gate check, unless this is the last
+                # allowed iteration (stop after 3 gate checks / 2 rewrites).
+                if retry < max_iterations - 1:
                     feedback = await self._collect_gate_feedback(run.id)
+                    package_with_feedback = dict(package)
                     package_with_feedback["gate_feedback"] = feedback
                     draft = await self.generator.generate_draft(package_with_feedback)
                     word_count = self._count_words(draft)
                     run.draft_content = draft
                     run.word_count = word_count
-                    run.gate_result_json = {"passed": True}
-                else:
-                    break
             # ---
 
             run = await self.run_repo.update(run, {
                 "draft_content": draft,
                 "word_count": word_count,
-                "gate_result_json": gate_result,
-                "gated": gate_svc_result["gated"],
-                "has_pending_repairs": gate_svc_result["has_pending_repairs"],
+                "gate_result_json": gate_svc_result.get("snapshot", gate_result),
+                "gated": gate_svc_result.get("gated", False),
+                "has_pending_repairs": gate_svc_result.get("has_pending_repairs", False),
                 "status": "completed",
             })
         except Exception as e:

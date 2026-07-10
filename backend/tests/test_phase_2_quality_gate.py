@@ -368,3 +368,277 @@ async def test_get_repairs_endpoint(client, novel_and_headers):
     data = resp.json()["data"]
     assert "repair_logs" in data
     assert "pending_repairs" in data
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 real quality gate checks (Task 2)
+# ---------------------------------------------------------------------------
+
+
+from app.ai.quality_gate import AGENT_TYPES, BaseQualityGateAgent  # noqa: E402
+
+
+class ScriptedFakeAgent(BaseQualityGateAgent):
+    """Returns a fixed list of CheckResults for deterministic tests."""
+
+    def __init__(self, results):
+        self._results = results
+
+    async def check(self, draft: str, brief: dict, context_package: dict) -> list:
+        return list(self._results)
+
+
+class RaisingFakeAgent(BaseQualityGateAgent):
+    """Simulates a provider/parse failure."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    async def check(self, draft: str, brief: dict, context_package: dict) -> list:
+        raise self._exc
+
+
+class CountingFakeGenerator:
+    """Wraps FakeWritingGenerator and counts generate_draft calls."""
+
+    def __init__(self):
+        from app.ai.writer import FakeWritingGenerator
+
+        self._inner = FakeWritingGenerator()
+        self.call_count = 0
+
+    async def generate_draft(self, context_package: dict) -> str:
+        self.call_count += 1
+        return await self._inner.generate_draft(context_package)
+
+    async def generate_blueprint(self, *a, **kw):
+        return await self._inner.generate_blueprint(*a, **kw)
+
+    async def generate_chapter_plan(self, *a, **kw):
+        return await self._inner.generate_chapter_plan(*a, **kw)
+
+    async def generate_chapter_brief(self, *a, **kw):
+        return await self._inner.generate_chapter_brief(*a, **kw)
+
+
+async def _seed_writing_setup(db):
+    """Create a user, novel, chapter plan and brief for WritingService tests."""
+    from app.models.user import User
+    from app.models.novel import Novel
+    from app.models.writing import ChapterPlan, ChapterBrief
+
+    user = User(username="gate_runner", hashed_password="x")
+    db.add(user)
+    await db.flush()
+    novel = Novel(user_id=user.id, title="门禁测试", description="", genre="古风", style_guide="第三人称")
+    db.add(novel)
+    await db.flush()
+    plan = ChapterPlan(novel_id=novel.id, position=1, status="ready", content_json={"chapter_title": "第一章"})
+    db.add(plan)
+    await db.flush()
+    brief = ChapterBrief(
+        novel_id=novel.id,
+        chapter_plan_id=plan.id,
+        status="ready",
+        brief_json={"writing_goal": "推进剧情", "acceptance_criteria": "完成剧情任务"},
+        length_contract_json={"target_words": 100, "min_words": 50, "max_words": 5000},
+    )
+    db.add(brief)
+    await db.flush()
+    return user.id, novel.id, brief.id
+
+
+@pytest.mark.asyncio
+async def test_quality_gate_service_needs_intent_and_auto_fixable(db):
+    """One needs_intent character issue + one auto_fixable style issue creates the
+    correct repair records, keeps location/context, and returns has_pending_repairs."""
+    from app.models.writing import WritingRun
+
+    run = WritingRun(
+        novel_id=1,
+        chapter_brief_id=1,
+        context_package_id=1,
+        status="running",
+        draft_content="原文片段ABC剩余正文",
+        word_count=10,
+    )
+    db.add(run)
+    await db.flush()
+
+    results = [
+        CheckResult(
+            passed=False,
+            issue_type="character",
+            severity="needs_intent",
+            description="角色反应与既定人设不符",
+            location="第3段",
+            context="主角突然表现出与谨慎人设相悖的冲动",
+            options=[{"label": "方案A", "summary": "保持谨慎"}, {"label": "方案B", "summary": "解释冲动原因"}],
+            intent_type="choice",
+        ),
+        CheckResult(
+            passed=False,
+            issue_type="style",
+            severity="auto_fixable",
+            fix_strategy="local_replace",
+            fixed_text="修正后的文风片段",
+            fix_description="替换口语化表达",
+            location="原文片段ABC",
+        ),
+    ]
+    svc = QualityGateService(db=db, agent=ScriptedFakeAgent(results))
+    result = await svc.run(run, {}, {})
+
+    assert result["gated"] is True
+    assert result["has_pending_repairs"] is True
+
+    # PendingRepair keeps character issue location/context/options/intent_type
+    pend_repo = PendingRepairRepo(db)
+    repairs = await pend_repo.list_by_writing_run(run.id)
+    assert len(repairs) == 1
+    pr = repairs[0]
+    assert pr.issue_type == "character"
+    assert pr.location == "第3段"
+    assert pr.context == "主角突然表现出与谨慎人设相悖的冲动"
+    assert pr.intent_type == "choice"
+    assert pr.options == [{"label": "方案A", "summary": "保持谨慎"}, {"label": "方案B", "summary": "解释冲动原因"}]
+
+    # RepairLog records the local replace and draft is updated
+    log_repo = RepairLogRepo(db)
+    logs = await log_repo.list_by_writing_run(run.id)
+    assert len(logs) == 1
+    assert logs[0].issue_type == "style"
+    refreshed = await db.get(WritingRun, run.id)
+    assert refreshed.draft_content == "修正后的文风片段剩余正文"
+
+    # ReviewIssue persisted for every failed check
+    from app.models.planning import ReviewIssue
+    from sqlalchemy import select
+
+    issues = (await db.execute(select(ReviewIssue).where(ReviewIssue.writing_run_id == run.id))).scalars().all()
+    assert len(issues) == 2
+    issue_types = {i.issue_type for i in issues}
+    assert issue_types == {"character", "style"}
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_parse_check_results_contract():
+    """Parsed results always carry an allowed issue type and severity."""
+    from app.ai.quality_agents import parse_check_results
+
+    raw = '''
+    [
+        {"passed": true, "severity": "auto_fixable", "extra_field": "ignored"},
+        {"passed": false, "severity": "needs_intent", "location": "第2段", "description": "问题", "unknown": 1}
+    ]
+    '''
+    results = parse_check_results(raw, "continuity")
+    assert len(results) == 2
+    for r in results:
+        assert r.issue_type == "continuity"
+        assert r.issue_type in AGENT_TYPES
+        assert r.severity in ("auto_fixable", "needs_intent")
+    assert results[0].passed is True
+    assert results[1].passed is False
+
+
+@pytest.mark.asyncio
+async def test_parse_check_results_malformed_raises():
+    """A malformed model response raises so the service can convert it to a failed gate."""
+    from app.ai.quality_agents import parse_check_results
+
+    # not JSON
+    try:
+        parse_check_results("not json at all", "style")
+        assert False, "expected raise on non-JSON"
+    except Exception:
+        pass
+
+    # invalid severity
+    try:
+        parse_check_results('[{"passed": false, "severity": "bogus"}]', "style")
+        assert False, "expected raise on invalid severity"
+    except Exception:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_deepseek_quality_gate_agent_has_seven_checkers():
+    """The real agent wires one checker per AGENT_TYPE, invoked sequentially."""
+    from app.ai.quality_agents import DeepSeekQualityGateAgent
+
+    agent = DeepSeekQualityGateAgent()
+    assert len(agent.checkers) == len(AGENT_TYPES)
+    wired_types = {c.issue_type for c in agent.checkers}
+    assert wired_types == set(AGENT_TYPES)
+
+
+@pytest.mark.asyncio
+async def test_quality_gate_service_provider_failure(db):
+    """Provider/parse failure leaves the draft available with gated=False and a diagnostic."""
+    from app.models.writing import WritingRun
+
+    run = WritingRun(
+        novel_id=1,
+        chapter_brief_id=1,
+        context_package_id=1,
+        status="running",
+        draft_content="草稿正文应保留",
+        word_count=6,
+    )
+    db.add(run)
+    await db.flush()
+
+    svc = QualityGateService(db=db, agent=RaisingFakeAgent(RuntimeError("deepseek timeout")))
+    result = await svc.run(run, {}, {})
+
+    assert result["gated"] is False
+    assert result["has_pending_repairs"] is False
+    assert result["rewrite_needed"] is False
+    refreshed = await db.get(WritingRun, run.id)
+    assert refreshed.gated is False
+    # draft preserved
+    assert refreshed.draft_content == "草稿正文应保留"
+    # diagnostic recorded
+    assert refreshed.gate_result_json.get("error")
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_writing_run_three_iteration_limit(db):
+    """The auto-fix rewrite loop is bounded to 3 iterations and terminates."""
+    from app.services.writing_service import WritingService
+
+    user_id, novel_id, brief_id = await _seed_writing_setup(db)
+
+    gen = CountingFakeGenerator()
+    always_rewrite = ScriptedFakeAgent(
+        [CheckResult(passed=False, issue_type="style", severity="auto_fixable", fix_strategy="full_rewrite", fix_description="重写")]
+    )
+    svc = WritingService(db=db, user_id=user_id, novel_id=novel_id, generator=gen, gate_agent=always_rewrite)
+    run = await svc.create_writing_run(brief_id)
+
+    # bounded: 1 initial draft + at most 2 rewrites == 3 generations
+    assert gen.call_count == 3
+    assert run.status == "completed"
+    assert run.draft_content  # draft available
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_writing_run_all_pass_no_rewrite(db):
+    """All-pass quality gate does not trigger any rewrite."""
+    from app.services.writing_service import WritingService
+
+    user_id, novel_id, brief_id = await _seed_writing_setup(db)
+
+    gen = CountingFakeGenerator()
+    svc = WritingService(db=db, user_id=user_id, novel_id=novel_id, generator=gen, gate_agent=FakeQualityGateAgent())
+    run = await svc.create_writing_run(brief_id)
+
+    assert gen.call_count == 1
+    assert run.status == "completed"
+    assert run.gated is True
+    assert run.has_pending_repairs is False
+    await db.rollback()

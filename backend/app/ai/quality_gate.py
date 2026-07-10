@@ -41,3 +41,16 @@ class FakeQualityGateAgent(BaseQualityGateAgent):
             CheckResult(passed=True, issue_type=t, severity="auto_fixable", fix_strategy="local_replace")
             for t in AGENT_TYPES
         ]
+
+
+# Imported at the bottom to avoid a circular import: quality_agents imports the
+# names defined above (CheckResult, AGENT_TYPES, BaseQualityGateAgent).
+from app.ai.quality_agents import DeepSeekQualityGateAgent  # noqa: E402, F401
+
+__all__ = [
+    "CheckResult",
+    "AGENT_TYPES",
+    "BaseQualityGateAgent",
+    "FakeQualityGateAgent",
+    "DeepSeekQualityGateAgent",
+]

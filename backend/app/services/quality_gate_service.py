@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.quality_gate import BaseQualityGateAgent, FakeQualityGateAgent
 from app.models.writing import WritingRun
-from app.repositories.quality_gate_repo import RepairLogRepo, PendingRepairRepo
+from app.repositories.quality_gate_repo import RepairLogRepo, PendingRepairRepo, ReviewIssueRepo
 
 logger = logging.getLogger("novel_agent.quality_gate")
 
@@ -19,20 +19,33 @@ class QualityGateService:
         self.agent = agent or FakeQualityGateAgent()
         self.log_repo = RepairLogRepo(db)
         self.pending_repo = PendingRepairRepo(db)
+        self.issue_repo = ReviewIssueRepo(db)
 
     async def run(self, run: WritingRun, brief: dict, context_package: dict) -> dict:
         try:
             results = await self.agent.check(run.draft_content, brief, context_package)
         except Exception as e:
             logger.exception("Quality gate check failed, skipping")
-            return {"gated": False, "has_pending_repairs": False, "rewrite_needed": False}
+            run.gated = False
+            run.has_pending_repairs = False
+            run.gate_result_json = {"passed": False, "gated": False, "error": str(e)}
+            await self.db.flush()
+            return {
+                "gated": False,
+                "has_pending_repairs": False,
+                "rewrite_needed": False,
+                "error": str(e),
+                "snapshot": run.gate_result_json,
+            }
 
         has_pending = False
         auto_rewrite_needed = False
+        failed = []
 
         for r in results:
             if r.passed:
                 continue
+            failed.append(r)
             if r.severity == "auto_fixable":
                 if r.fix_strategy == "full_rewrite":
                     auto_rewrite_needed = True
@@ -66,8 +79,32 @@ class QualityGateService:
                     "intent_type": r.intent_type or "freeform",
                 })
 
+            await self.issue_repo.create(run.novel_id, run.id, {
+                "issue_type": r.issue_type,
+                "severity": r.severity,
+                "location": r.location,
+                "description": r.description or r.fix_description,
+                "related_memory": r.context or None,
+                "suggestion": r.fix_description or "",
+                "acceptance_blocking": r.severity == "needs_intent",
+            })
+
         run.gated = True
         run.has_pending_repairs = has_pending
+        snapshot = {
+            "passed": len(failed) == 0,
+            "gated": True,
+            "failed_count": len(failed),
+            "issue_types": [r.issue_type for r in failed],
+            "has_pending_repairs": has_pending,
+            "rewrite_needed": auto_rewrite_needed,
+        }
+        run.gate_result_json = snapshot
 
         await self.db.flush()
-        return {"gated": True, "has_pending_repairs": has_pending, "rewrite_needed": auto_rewrite_needed}
+        return {
+            "gated": True,
+            "has_pending_repairs": has_pending,
+            "rewrite_needed": auto_rewrite_needed,
+            "snapshot": snapshot,
+        }

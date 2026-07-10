@@ -3,6 +3,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.planning import ReviewIssue
 from app.models.writing import RepairLog, PendingRepair
 
 
@@ -72,3 +73,22 @@ class PendingRepairRepo:
         for r in repairs:
             await self.db.delete(r)
         await self.db.flush()
+
+
+class ReviewIssueRepo:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def create(self, novel_id: int, writing_run_id: Optional[int], data: dict) -> ReviewIssue:
+        issue = ReviewIssue(novel_id=novel_id, writing_run_id=writing_run_id, **data)
+        self.db.add(issue)
+        await self.db.flush()
+        return issue
+
+    async def list_by_writing_run(self, writing_run_id: int) -> list[ReviewIssue]:
+        result = await self.db.execute(
+            select(ReviewIssue)
+            .where(ReviewIssue.writing_run_id == writing_run_id)
+            .order_by(ReviewIssue.created_at.asc())
+        )
+        return list(result.scalars().all())
