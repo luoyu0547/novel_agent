@@ -287,3 +287,15 @@ async def resolve_repair(
         intent_text=body.intent_text,
     )
     return ApiResponse.success(message="修复项已处理")
+
+
+@router.post("/writing-runs/{run_id}/review")
+async def review_writing_run(
+    novel_id: int,
+    run_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    svc = _get_service(db, current_user, novel_id)
+    result = await svc.review_writing_run(run_id)
+    return ApiResponse.success(data=result)

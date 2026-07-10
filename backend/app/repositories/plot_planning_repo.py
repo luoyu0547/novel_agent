@@ -133,6 +133,14 @@ class PlotPlanningRepo:
         )
         return list(result.scalars().all())
 
+    async def list_decisions(self, novel_id: int, status: Optional[str] = None) -> list[PlanningDecision]:
+        stmt = select(PlanningDecision).where(PlanningDecision.novel_id == novel_id)
+        if status:
+            stmt = stmt.where(PlanningDecision.status == status)
+        stmt = stmt.order_by(PlanningDecision.created_at.desc())
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
     async def create_decision(self, novel_id: int, data: dict) -> PlanningDecision:
         decision = PlanningDecision(novel_id=novel_id, **data)
         self.db.add(decision)

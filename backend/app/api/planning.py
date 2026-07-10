@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -13,6 +15,7 @@ from app.schemas.plot_planning import (
     PlotUnitCreateRequest,
     PlotUnitOut,
     PlotPlanRevisionOut,
+    PlanningDecisionOut,
 )
 from app.services.plot_planning_service import PlotPlanningService
 
@@ -131,3 +134,29 @@ async def confirm_plan(
     svc = _get_service(db, current_user, novel_id)
     plan = await svc.confirm_plan(plot_unit_id, revision_id)
     return ApiResponse.success(data=PlotPlanRevisionOut.model_validate(plan).model_dump())
+
+
+@router.get("/planning-decisions")
+async def list_planning_decisions(
+    novel_id: int,
+    status: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    svc = _get_service(db, current_user, novel_id)
+    decisions = await svc.list_decisions(status=status)
+    return ApiResponse.success(
+        data=[PlanningDecisionOut.model_validate(d).model_dump() for d in decisions]
+    )
+
+
+@router.get("/planning-decisions/{decision_id}")
+async def get_planning_decision(
+    novel_id: int,
+    decision_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    svc = _get_service(db, current_user, novel_id)
+    decision = await svc.get_decision(decision_id)
+    return ApiResponse.success(data=PlanningDecisionOut.model_validate(decision).model_dump())

@@ -16,8 +16,10 @@ from app.ai.writer import BaseWritingGenerator, DeepSeekWritingGenerator
 from app.services.quality_gate_service import QualityGateService
 from app.core.exceptions import NotFound, AppException
 from app.models.novel import Novel, Chapter
+from app.models.quality_gate import ReviewIssue
 from app.models.writing import NovelBlueprint, ChapterPlan, ChapterBrief, ContextPackage, WritingRun
 from app.repositories.novel_repo import NovelRepo
+from app.repositories.quality_gate_repo import ReviewIssueRepo
 from app.repositories.writing_repo import (
     BlueprintRepo,
     ChapterPlanRepo,
@@ -518,6 +520,85 @@ class WritingService:
             raise AppException("该写作运行已处理")
         await self.run_repo.update(run, {"status": "discarded"})
         await self.db.commit()
+
+    # ---- Draft Review (Task 5) ----
+
+    async def review_writing_run(self, run_id: int) -> dict:
+        novel = await self._ensure_owned_novel()
+        run = await self.run_repo.get_by_id(run_id)
+        if not run or run.novel_id != self.novel_id:
+            raise NotFound("写作运行不存在")
+        if run.status not in ("completed", "accepted"):
+            raise AppException("只能审查已完成或已接受的写作运行")
+        if not run.draft_content:
+            raise AppException("写作运行没有草稿")
+        if not run.context_snapshot_json:
+            raise AppException("写作运行没有上下文快照")
+
+        snapshot = run.context_snapshot_json
+        plot_plan = {}
+        plot_plan_revision_id = snapshot.get("plot_plan_revision_id")
+        if plot_plan_revision_id:
+            from app.repositories.plot_planning_repo import PlotPlanningRepo
+            pp_repo = PlotPlanningRepo(self.db)
+            revision = await pp_repo.get_plan_revision(plot_plan_revision_id, self.novel_id)
+            if revision:
+                plot_plan = revision.plan_json
+
+        context = {
+            "plot_plan": plot_plan,
+            "published_canon": snapshot.get("published_canon", {}),
+            "snapshot": snapshot,
+        }
+
+        try:
+            review = await self.generator.review_draft(context, run.draft_content)
+        except Exception as e:
+            logger.exception("Draft review failed for run %s", run_id)
+            raise AppException(f"草稿审查失败: {e}")
+
+        decision = None
+        review_issues = []
+
+        for conflict in review.narrative_conflicts:
+            from app.services.plot_planning_service import PlotPlanningService
+            pp_svc = PlotPlanningService(self.db, self.user_id, self.novel_id, self.generator)
+            created = await pp_svc.create_decision_from_conflict(
+                conflict, source="during_review", run_id=run_id,
+            )
+            decision = {
+                "id": created.id,
+                "conflict_summary": created.conflict_summary,
+                "options_json": created.options_json,
+                "recommended_index": created.recommended_index,
+                "recommendation_reason": created.recommendation_reason,
+                "source": created.source,
+            }
+
+        issue_repo = ReviewIssueRepo(self.db)
+        for qi in review.quality_issues:
+            issue = await issue_repo.create(self.novel_id, run_id, {
+                "issue_type": qi.get("issue_type", "unknown"),
+                "severity": qi.get("severity", "warning"),
+                "location": qi.get("location", ""),
+                "description": qi.get("description", ""),
+                "related_memory": qi.get("related_memory"),
+                "suggestion": qi.get("suggestion", ""),
+                "acceptance_blocking": qi.get("acceptance_blocking", False),
+            })
+            review_issues.append({
+                "id": issue.id,
+                "issue_type": issue.issue_type,
+                "severity": issue.severity,
+                "location": issue.location,
+                "description": issue.description,
+                "related_memory": issue.related_memory,
+                "suggestion": issue.suggestion,
+                "acceptance_blocking": issue.acceptance_blocking,
+            })
+
+        await self.db.commit()
+        return {"decision": decision, "review_issues": review_issues}
 
     # ---- Helpers ----
 

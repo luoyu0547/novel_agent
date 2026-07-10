@@ -23,6 +23,8 @@ from app.repositories.plot_planning_repo import PlotPlanningRepo
 
 logger = logging.getLogger("novel_agent.plot_planning")
 
+VALID_SOURCES = {"during_generation", "during_review"}
+
 
 class PlotPlanningService:
     def __init__(
@@ -222,6 +224,11 @@ class PlotPlanningService:
         source: str,
         run_id: int,
     ) -> PlanningDecision:
+        if source not in VALID_SOURCES:
+            raise BadRequest(f"无效的 source 值: {source}")
+        if len(conflict.options) < 2:
+            raise BadRequest("决策方案少于 2 个")
+
         await self._ensure_owned_novel()
         from app.repositories.writing_repo import WritingRunRepo
         run_repo = WritingRunRepo(self.db)
@@ -233,6 +240,7 @@ class PlotPlanningService:
             plan_revision = await self.repo.get_plan_revision(plot_plan_revision_id, self.novel_id)
             if plan_revision:
                 plot_unit_id = plan_revision.plot_unit_id
+                plan_revision.status = "blocked"
         decision = await self.repo.create_decision(self.novel_id, {
             "plot_unit_id": plot_unit_id,
             "plot_plan_revision_id": plot_plan_revision_id,
@@ -254,3 +262,14 @@ class PlotPlanningService:
     async def list_pending_decisions(self) -> list[PlanningDecision]:
         await self._ensure_owned_novel()
         return await self.repo.list_pending_decisions(self.novel_id)
+
+    async def list_decisions(self, status: Optional[str] = None) -> list[PlanningDecision]:
+        await self._ensure_owned_novel()
+        return await self.repo.list_decisions(self.novel_id, status)
+
+    async def get_decision(self, decision_id: int) -> PlanningDecision:
+        await self._ensure_owned_novel()
+        decision = await self.repo.get_decision(decision_id, self.novel_id)
+        if not decision:
+            raise NotFound("决策不存在")
+        return decision

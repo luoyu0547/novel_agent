@@ -5,6 +5,7 @@ from app.ai.plot_planning import (
     ConflictOutput,
     DecisionOption,
     DraftGenerationOutput,
+    DraftReviewOutput,
 )
 from app.ai.quality_gate import FakeQualityGateAgent
 from app.ai.writer import FakePhase3WritingGenerator
@@ -18,7 +19,7 @@ from app.models.plot_planning import (
     PlanningDecision,
 )
 from app.models.user import User
-from app.models.writing import ChapterPlan, ChapterBrief
+from app.models.writing import ChapterPlan, ChapterBrief, WritingRun
 from app.schemas.plot_planning import ChooseDecisionRequest
 from app.services.writing_service import WritingService
 
@@ -489,3 +490,89 @@ async def test_decision_required_preserves_partial_unpublished_draft(db):
     assert ch_locked is not None and ch_locked.status == "locked"
     ch_draft = await db.get(Chapter, 2)
     assert ch_draft is not None and ch_draft.status == "draft"
+
+
+# ---- Task 5: Shared decision, draft review, quality routing ----
+
+
+def conflict_output():
+    return ConflictOutput(
+        source="during_generation",
+        core_conflict="已发布事实与新目标冲突",
+        options=[
+            DecisionOption(label="补充因果", action="补充", consequence="保留已发布事实"),
+            DecisionOption(label="改变未来目标", action="改变", consequence="不触碰正文"),
+        ],
+        recommended_index=0,
+        recommendation_reason="影响范围最小",
+        impact_scope={"type": "scene", "start": 2, "end": 2},
+    )
+
+
+@pytest.mark.asyncio
+async def test_generation_and_review_use_same_decision_shape(db):
+    from app.services.plot_planning_service import PlotPlanningService
+
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    chapter_plan = ChapterPlan(id=1, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(chapter_plan)
+    brief = ChapterBrief(id=1, novel_id=1, chapter_plan_id=1, brief_json={"writing_goal": "测试"}, length_contract_json={}, status="ready")
+    db.add(brief)
+    run = WritingRun(
+        id=1, novel_id=1, chapter_brief_id=1, context_package_id=1,
+        status="completed", draft_content="测试正文",
+        context_snapshot_json={},
+    )
+    db.add(run)
+    await db.commit()
+
+    gen_service = PlotPlanningService(db=db, user_id=1, novel_id=1)
+    rev_service = PlotPlanningService(db=db, user_id=1, novel_id=1)
+    conflict = conflict_output()
+    during_generation = await gen_service.create_decision_from_conflict(
+        conflict, source="during_generation", run_id=1,
+    )
+    during_review = await rev_service.create_decision_from_conflict(
+        conflict.model_copy(update={"source": "during_review"}),
+        source="during_review", run_id=1,
+    )
+    assert during_generation.conflict_summary == during_review.conflict_summary
+    assert during_generation.options_json == during_review.options_json
+    assert during_generation.source == "during_generation"
+    assert during_review.source == "during_review"
+
+
+@pytest.mark.asyncio
+async def test_review_does_not_turn_style_issue_into_decision(db):
+    from app.services.plot_planning_service import PlotPlanningService
+
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    chapter_plan = ChapterPlan(id=1, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(chapter_plan)
+    brief = ChapterBrief(id=1, novel_id=1, chapter_plan_id=1, brief_json={"writing_goal": "测试"}, length_contract_json={}, status="ready")
+    db.add(brief)
+    run = WritingRun(
+        id=1, novel_id=1, chapter_brief_id=1, context_package_id=1,
+        status="completed", draft_content="测试正文",
+        context_snapshot_json={"foundation_revision_id": 1},
+    )
+    db.add(run)
+    await db.commit()
+
+    generator = FakePhase3WritingGenerator(
+        review=DraftReviewOutput(
+            narrative_conflicts=[],
+            quality_issues=[{"issue_type": "style", "severity": "warning", "description": "句式重复", "location": "第2段"}],
+        )
+    )
+    service = WritingService(db=db, user_id=1, novel_id=1, generator=generator)
+    result = await service.review_writing_run(1)
+    assert result["decision"] is None
+    assert len(result["review_issues"]) == 1
+    assert await PlotPlanningService(db, 1, 1).list_pending_decisions() == []
