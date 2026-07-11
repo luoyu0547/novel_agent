@@ -69,17 +69,6 @@ const decisionFixture = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
-const chapterFixture = {
-  id: 1,
-  novel_id: 1,
-  title: '第一章',
-  content: '正文内容正文内容',
-  summary: '摘要',
-  status: 'draft' as const,
-  created_at: '2026-01-01T00:00:00Z',
-  updated_at: '2026-01-01T00:00:00Z',
-}
-
 const draftRevisionFixture = {
   id: 1,
   novel_id: 1,
