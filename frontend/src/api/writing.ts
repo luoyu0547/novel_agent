@@ -27,20 +27,44 @@ export function updateChapterPlan(novelId: number, planId: number, data: Partial
   return client.put(`/novels/${novelId}/chapter-plans/${planId}`, data)
 }
 
-export function generateChapterBrief(novelId: number, chapterPlanId: number): Promise<ChapterBrief> {
-  return client.post(`/novels/${novelId}/chapter-briefs/generate`, { chapter_plan_id: chapterPlanId })
+export function generateChapterBrief(
+  novelId: number,
+  chapterPlanId: number,
+  plotPlanRevisionId?: number,
+  authorInput?: string,
+): Promise<ChapterBrief> {
+  const body: Record<string, unknown> = { chapter_plan_id: chapterPlanId }
+  if (plotPlanRevisionId !== undefined) body.plot_plan_revision_id = plotPlanRevisionId
+  if (authorInput !== undefined) body.author_input = authorInput
+  return client.post(`/novels/${novelId}/chapter-briefs/generate`, body)
 }
 
 export function updateChapterBrief(novelId: number, briefId: number, data: Partial<ChapterBrief>): Promise<ChapterBrief> {
   return client.put(`/novels/${novelId}/chapter-briefs/${briefId}`, data)
 }
 
-export function generateContextPackage(novelId: number, chapterBriefId: number): Promise<ContextPackage> {
-  return client.post(`/novels/${novelId}/context-packages/generate`, { chapter_brief_id: chapterBriefId })
+export function generateContextPackage(
+  novelId: number,
+  chapterBriefId: number,
+  plotPlanRevisionId?: number,
+  authorInput?: string,
+): Promise<ContextPackage> {
+  const body: Record<string, unknown> = { chapter_brief_id: chapterBriefId }
+  if (plotPlanRevisionId !== undefined) body.plot_plan_revision_id = plotPlanRevisionId
+  if (authorInput !== undefined) body.author_input = authorInput
+  return client.post(`/novels/${novelId}/context-packages/generate`, body)
 }
 
-export function createWritingRun(novelId: number, chapterBriefId: number): Promise<WritingRun> {
-  return client.post(`/novels/${novelId}/writing-runs`, { chapter_brief_id: chapterBriefId })
+export function createWritingRun(
+  novelId: number,
+  chapterBriefId: number,
+  plotPlanRevisionId?: number,
+  authorInput?: string,
+): Promise<WritingRun> {
+  const body: Record<string, unknown> = { chapter_brief_id: chapterBriefId }
+  if (plotPlanRevisionId !== undefined) body.plot_plan_revision_id = plotPlanRevisionId
+  if (authorInput !== undefined) body.author_input = authorInput
+  return client.post(`/novels/${novelId}/writing-runs`, body)
 }
 
 export function listWritingRuns(novelId: number): Promise<WritingRun[]> {

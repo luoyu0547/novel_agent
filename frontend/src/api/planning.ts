@@ -1,5 +1,5 @@
 import client from './client'
-import type { AuthorFoundation, AuthorFoundationUpdate, AuthorFoundationRevision, PlotUnit, PlotUnitCreate, PlotPlanRevision, PlanningDecision, ChooseDecisionRequest, DecisionResolution } from '@/types/plotPlanning'
+import type { AuthorFoundation, AuthorFoundationUpdate, AuthorFoundationRevision, PlotUnit, PlotUnitCreate, PlotPlanRevision, PlanningDecision, ChooseDecisionRequest, DecisionResolution, DraftRevision } from '@/types/plotPlanning'
 
 export function getFoundation(novelId: number): Promise<AuthorFoundation> {
   return client.get(`/novels/${novelId}/author-foundation`)
@@ -48,4 +48,8 @@ export function getDecision(novelId: number, decisionId: number): Promise<Planni
 
 export function chooseDecision(novelId: number, decisionId: number, data: ChooseDecisionRequest): Promise<DecisionResolution> {
   return client.put(`/novels/${novelId}/planning-decisions/${decisionId}/choose`, data)
+}
+
+export function applyDraftRevision(novelId: number, revisionId: number): Promise<DraftRevision> {
+  return client.put(`/novels/${novelId}/draft-revisions/${revisionId}/apply`)
 }

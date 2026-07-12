@@ -87,6 +87,8 @@ export interface PlanningDecision {
   recommended_index: number
   recommendation_reason: string
   impact_scope_json: Record<string, unknown>
+  selected_option_index?: number
+  custom_intent?: string
   created_at: string
   updated_at: string
 }

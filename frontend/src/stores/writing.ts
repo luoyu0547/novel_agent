@@ -57,30 +57,45 @@ export const useWritingStore = defineStore('writing', () => {
     }
   }
 
-  async function generateChapterBrief(novelId: number, planId: number) {
+  async function generateChapterBrief(
+    novelId: number,
+    planId: number,
+    plotPlanRevisionId?: number,
+    authorInput?: string,
+  ) {
     loading.value = true
     try {
-      latestBrief.value = await api.generateChapterBrief(novelId, planId)
+      latestBrief.value = await api.generateChapterBrief(novelId, planId, plotPlanRevisionId, authorInput)
       return latestBrief.value
     } finally {
       loading.value = false
     }
   }
 
-  async function generateContextPackage(novelId: number, briefId: number) {
+  async function generateContextPackage(
+    novelId: number,
+    briefId: number,
+    plotPlanRevisionId?: number,
+    authorInput?: string,
+  ) {
     loading.value = true
     try {
-      latestContext.value = await api.generateContextPackage(novelId, briefId)
+      latestContext.value = await api.generateContextPackage(novelId, briefId, plotPlanRevisionId, authorInput)
       return latestContext.value
     } finally {
       loading.value = false
     }
   }
 
-  async function createWritingRun(novelId: number, briefId: number) {
+  async function createWritingRun(
+    novelId: number,
+    briefId: number,
+    plotPlanRevisionId?: number,
+    authorInput?: string,
+  ) {
     loading.value = true
     try {
-      const run = await api.createWritingRun(novelId, briefId)
+      const run = await api.createWritingRun(novelId, briefId, plotPlanRevisionId, authorInput)
       writingRuns.value.unshift(run)
       return run
     } finally {

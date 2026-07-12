@@ -1,4 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import * as writingApi from '@/api/writing'
+import * as planningApi from '@/api/planning'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import DecisionCard from '@/components/writing/DecisionCard.vue'
@@ -25,6 +27,15 @@ vi.mock('vue-router', async () => {
     }),
   }
 })
+
+vi.mock('@/api/client', () => ({
+  default: {
+    get: vi.fn(),
+    post: vi.fn(),
+    put: vi.fn(),
+    delete: vi.fn(),
+  },
+}))
 
 // --- Stubs ---
 const globalStubs = {
@@ -253,5 +264,61 @@ describe('PlotPlanningStore', () => {
     expect(store.pendingDecisions).toEqual([])
     expect(store.currentDraftRevision).toBeNull()
     expect(store.loading).toBe(false)
+  })
+})
+
+// =============================================
+// Phase 3 API contract tests
+// =============================================
+describe('Phase 3 API contracts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('sends selected plot plan through brief, context, and run creation', async () => {
+    const client = (await import('@/api/client')).default
+    await writingApi.generateChapterBrief(1, 10, 20, '本章保护证人')
+    expect(client.post).toHaveBeenCalledWith('/novels/1/chapter-briefs/generate', {
+      chapter_plan_id: 10,
+      plot_plan_revision_id: 20,
+      author_input: '本章保护证人',
+    })
+  })
+
+  it('sends plot plan id through context package generation', async () => {
+    const client = (await import('@/api/client')).default
+    await writingApi.generateContextPackage(1, 5, 20, '保持悬疑感')
+    expect(client.post).toHaveBeenCalledWith('/novels/1/context-packages/generate', {
+      chapter_brief_id: 5,
+      plot_plan_revision_id: 20,
+      author_input: '保持悬疑感',
+    })
+  })
+
+  it('sends plot plan id through writing run creation', async () => {
+    const client = (await import('@/api/client')).default
+    await writingApi.createWritingRun(1, 5, 20, '注重动作描写')
+    expect(client.post).toHaveBeenCalledWith('/novels/1/writing-runs', {
+      chapter_brief_id: 5,
+      plot_plan_revision_id: 20,
+      author_input: '注重动作描写',
+    })
+  })
+
+  it('applies a draft revision through the planning API', async () => {
+    const client = (await import('@/api/client')).default
+    await planningApi.applyDraftRevision(1, 30)
+    expect(client.put).toHaveBeenCalledWith('/novels/1/draft-revisions/30/apply')
+  })
+
+  it('does not replace currentDraftRevision on API error', async () => {
+    const client = (await import('@/api/client')).default
+    vi.mocked(client.put).mockRejectedValueOnce(new Error('API error'))
+
+    const store = usePlotPlanningStore()
+    store.currentDraftRevision = null
+
+    await expect(store.chooseDecision(1, 1, { option_index: 0 })).rejects.toThrow()
+    expect(store.currentDraftRevision).toBeNull()
   })
 })

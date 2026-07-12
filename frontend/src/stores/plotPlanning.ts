@@ -9,6 +9,8 @@ export const usePlotPlanningStore = defineStore('plotPlanning', () => {
   const activePlan = ref<PlotPlanRevision | null>(null)
   const pendingDecisions = ref<PlanningDecision[]>([])
   const currentDraftRevision = ref<DraftRevision | null>(null)
+  const selectedPlotUnit = ref<PlotUnit | null>(null)
+  const planRevisions = ref<PlotPlanRevision[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
 
@@ -96,12 +98,31 @@ export const usePlotPlanningStore = defineStore('plotPlanning', () => {
     return plans
   }
 
+  async function selectPlotUnit(novelId: number, unit: PlotUnit) {
+    selectedPlotUnit.value = unit
+    planRevisions.value = await api.listPlotPlans(novelId, unit.id)
+    activePlan.value = planRevisions.value.find(plan => plan.status === 'active') || null
+  }
+
+  async function applyDraftRevision(novelId: number, revisionId: number) {
+    loading.value = true
+    try {
+      const revision = await api.applyDraftRevision(novelId, revisionId)
+      currentDraftRevision.value = null
+      return revision
+    } finally {
+      loading.value = false
+    }
+  }
+
   return {
     foundation,
     plotUnits,
     activePlan,
     pendingDecisions,
     currentDraftRevision,
+    selectedPlotUnit,
+    planRevisions,
     loading,
     error,
     fetchFoundation,
@@ -113,6 +134,8 @@ export const usePlotPlanningStore = defineStore('plotPlanning', () => {
     fetchPendingDecisions,
     chooseDecision,
     fetchPlans,
+    selectPlotUnit,
+    applyDraftRevision,
   }
 })
 
