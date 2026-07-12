@@ -161,9 +161,20 @@ class PlotPlanningRepo:
 
     async def list_draft_revisions_by_run(self, writing_run_id: int) -> list[DraftRevision]:
         result = await self.db.execute(
-            select(DraftRevision).where(DraftRevision.writing_run_id == writing_run_id)
+            select(DraftRevision)
+            .where(DraftRevision.writing_run_id == writing_run_id)
+            .order_by(DraftRevision.created_at.desc())
         )
         return list(result.scalars().all())
+
+    async def get_draft_revision(self, revision_id: int, novel_id: int) -> Optional[DraftRevision]:
+        result = await self.db.execute(
+            select(DraftRevision).where(
+                DraftRevision.id == revision_id,
+                DraftRevision.novel_id == novel_id,
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def mark_plans_stale(self, novel_id: int):
         await self.db.execute(

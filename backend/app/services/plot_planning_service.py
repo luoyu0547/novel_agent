@@ -248,6 +248,8 @@ class PlotPlanningService:
         from app.repositories.writing_repo import WritingRunRepo
         run_repo = WritingRunRepo(self.db)
         run = await run_repo.get_by_id(run_id)
+        if not run or run.novel_id != self.novel_id:
+            raise NotFound("写作运行不存在")
         snapshot = run.context_snapshot_json or {} if run else {}
         plot_plan_revision_id = snapshot.get("plot_plan_revision_id")
         plot_unit_id = None
@@ -321,6 +323,9 @@ class PlotPlanningService:
         elif decision.plot_unit_id:
             active_plan = await self.repo.get_active_plan(decision.plot_unit_id)
 
+        if active_plan and active_plan.status in ("stale", "superseded"):
+            raise BadRequest("关联的剧情计划已过期，请重新生成计划")
+
         draft_revisions = await self.repo.list_draft_revisions_by_run(decision.writing_run_id)
         parent_revision = draft_revisions[0] if draft_revisions else None
 
@@ -345,46 +350,46 @@ class PlotPlanningService:
         )
 
         new_plan = None
-        if active_plan:
-            await self.repo.archive_active_plans(active_plan.plot_unit_id)
-            new_plan_json = self._deep_merge(active_plan.plan_json, revision_result.plan_patch)
-            new_plan = await self.repo.create_plan_revision(self.novel_id, {
-                "plot_unit_id": active_plan.plot_unit_id,
-                "foundation_revision_id": active_plan.foundation_revision_id,
-                "based_on_published_chapter_id": active_plan.based_on_published_chapter_id,
-                "version": active_plan.version + 1,
-                "plan_json": new_plan_json,
-                "change_reason": f"decision_resolved:{decision_id}",
-                "status": "active",
-            })
-
         base_content = ""
         if parent_revision:
             base_content = parent_revision.candidate_content
         elif run:
             base_content = run.draft_content
 
-        draft_revision = await self.repo.create_draft_revision(self.novel_id, {
-            "writing_run_id": decision.writing_run_id,
-            "parent_revision_id": parent_revision.id if parent_revision else None,
-            "decision_id": decision_id,
-            "base_content": base_content,
-            "candidate_content": revision_result.candidate_content,
-            "scope_json": revision_result.scope,
-            "diff_json": revision_result.diff,
-            "reason": f"决策选择: {selected_direction}",
-            "status": "candidate",
-        })
+        try:
+            async with self.db.begin_nested():
+                if active_plan:
+                    await self.repo.archive_active_plans(active_plan.plot_unit_id)
+                    new_plan_json = self._deep_merge(active_plan.plan_json, revision_result.plan_patch)
+                    new_plan = await self.repo.create_plan_revision(self.novel_id, {
+                        "plot_unit_id": active_plan.plot_unit_id,
+                        "foundation_revision_id": active_plan.foundation_revision_id,
+                        "based_on_published_chapter_id": active_plan.based_on_published_chapter_id,
+                        "version": active_plan.version + 1,
+                        "plan_json": new_plan_json,
+                        "change_reason": f"decision_resolved:{decision_id}",
+                        "status": "active",
+                    })
 
-        decision.selected_option_index = option_index
-        decision.custom_intent = custom_intent if option_index is None else None
-        decision.status = "resolved"
-        decision.updated_at = datetime.datetime.now()
-        await self.db.flush()
+                draft_revision = await self.repo.create_draft_revision(self.novel_id, {
+                    "writing_run_id": decision.writing_run_id,
+                    "parent_revision_id": parent_revision.id if parent_revision else None,
+                    "decision_id": decision_id,
+                    "base_content": base_content,
+                    "candidate_content": revision_result.candidate_content,
+                    "scope_json": revision_result.scope,
+                    "diff_json": revision_result.diff,
+                    "reason": f"决策选择: {selected_direction}",
+                    "status": "candidate",
+                })
 
-        if run:
-            run.draft_content = revision_result.candidate_content
-            await self.db.flush()
+                decision.selected_option_index = option_index
+                decision.custom_intent = custom_intent if option_index is None else None
+                decision.status = "resolved"
+                decision.updated_at = datetime.datetime.now()
+        except Exception:
+            await self.db.rollback()
+            raise
 
         await self.db.commit()
         await self.db.refresh(draft_revision)
@@ -392,6 +397,46 @@ class PlotPlanningService:
             await self.db.refresh(new_plan)
 
         return decision, new_plan, draft_revision, run
+
+    async def apply_draft_revision(self, revision_id: int) -> DraftRevision:
+        await self._ensure_owned_novel()
+        revision = await self.repo.get_draft_revision(revision_id, self.novel_id)
+        if not revision:
+            raise NotFound("修订不存在")
+        if revision.status != "candidate":
+            raise BadRequest("只能应用候选状态的修订")
+
+        from app.repositories.writing_repo import WritingRunRepo
+        run_repo = WritingRunRepo(self.db)
+        run = await run_repo.get_by_id(revision.writing_run_id)
+        if not run or run.novel_id != self.novel_id:
+            raise NotFound("关联的写作运行不存在")
+        if not run.draft_content:
+            raise BadRequest("关联的写作运行没有草稿内容")
+
+        if run.target_chapter_id:
+            from app.models.novel import Chapter
+            chapter = await self.db.get(Chapter, run.target_chapter_id)
+            if chapter and chapter.status == "locked":
+                raise BadRequest("目标章节已发布，不可覆盖")
+
+        siblings = await self.repo.list_draft_revisions_by_run(revision.writing_run_id)
+        for sib in siblings:
+            if sib.id != revision.id and sib.status == "candidate":
+                sib.status = "superseded"
+                sib.updated_at = datetime.datetime.now()
+
+        revision.status = "applied"
+        revision.updated_at = datetime.datetime.now()
+
+        run.draft_content = revision.candidate_content
+        run.planning_blocked = False
+        if run.status == "decision_required":
+            run.status = "completed"
+
+        await self.db.commit()
+        await self.db.refresh(revision)
+        return revision
 
     @staticmethod
     def _deep_merge(base: dict, patch: dict) -> dict:

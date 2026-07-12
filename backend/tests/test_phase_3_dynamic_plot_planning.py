@@ -11,7 +11,7 @@ from app.ai.plot_planning import (
 )
 from app.ai.writer import DeepSeekWritingGenerator, FakePhase3WritingGenerator
 from app.ai.quality_gate import FakeQualityGateAgent
-from app.core.exceptions import NotFound
+from app.core.exceptions import NotFound, BadRequest
 from app.models.novel import Novel, Chapter
 from app.models.plot_planning import (
     AuthorFoundation,
@@ -717,6 +717,246 @@ async def test_choose_decision_preserves_unaffected_text_and_creates_new_plan(db
     assert decision.custom_intent is None
 
 
+# ---- Task 3: Transactional decisions and candidate application ----
+
+
+@pytest.mark.asyncio
+async def test_review_conflict_sets_planning_blocked(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    chapter_plan = ChapterPlan(id=1, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(chapter_plan)
+    brief = ChapterBrief(id=1, novel_id=1, chapter_plan_id=1, brief_json={"writing_goal": "测试"}, length_contract_json={}, status="ready")
+    db.add(brief)
+    run = WritingRun(
+        id=1, novel_id=1, chapter_brief_id=1, context_package_id=1,
+        status="completed", draft_content="测试正文",
+        context_snapshot_json={"foundation_revision_id": 1},
+    )
+    db.add(run)
+    await db.commit()
+
+    generator = FakePhase3WritingGenerator(
+        review=DraftReviewOutput(
+            narrative_conflicts=[conflict_output()],
+            quality_issues=[],
+        )
+    )
+    service = WritingService(db=db, user_id=1, novel_id=1, generator=generator)
+    result = await service.review_writing_run(1)
+    assert result["decision"] is not None
+    refreshed = await db.get(WritingRun, 1)
+    assert refreshed.planning_blocked is True
+
+
+@pytest.mark.asyncio
+async def test_choose_decision_keeps_candidate_unapplied_until_apply(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.flush()
+
+    from app.services.plot_planning_service import PlotPlanningService
+    from app.repositories.plot_planning_repo import PlotPlanningRepo
+
+    pp_svc = PlotPlanningService(db, 1, 1, generator=FakePhase3WritingGenerator())
+    await pp_svc.update_foundation(
+        {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
+        change_reason="initial",
+    )
+    repo = PlotPlanningRepo(db)
+    unit = await pp_svc.create_plot_unit({
+        "title": "第一卷", "scope_type": "volume", "start_position": 1, "end_position": 10,
+    })
+    plan = await pp_svc.generate_plan(unit.id)
+    confirmed = await pp_svc.confirm_plan(unit.id, plan.id)
+    assert confirmed.status == "active"
+
+    cp = ChapterPlan(id=2, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(cp)
+    await db.flush()
+    brief = ChapterBrief(id=2, novel_id=1, chapter_plan_id=2, brief_json={"writing_goal": "测试"}, length_contract_json={}, status="ready")
+    db.add(brief)
+    await db.flush()
+    original_draft = "开头不变。旧冲突场景。结尾不变。"
+    run = WritingRun(
+        id=2, novel_id=1, chapter_brief_id=2, context_package_id=1,
+        status="completed", draft_content=original_draft,
+        planning_blocked=True,
+        context_snapshot_json={"plot_plan_revision_id": confirmed.id},
+    )
+    db.add(run)
+    await db.flush()
+
+    decision = await repo.create_decision(1, {
+        "plot_unit_id": unit.id,
+        "plot_plan_revision_id": confirmed.id,
+        "writing_run_id": 2,
+        "source": "during_generation",
+        "status": "pending",
+        "conflict_summary": "冲突需要解决",
+        "evidence_json": {},
+        "options_json": [
+            {"label": "补充因果", "action": "补充", "consequence": "保留事实"},
+            {"label": "改写未来", "action": "改写", "consequence": "延后揭示"},
+        ],
+        "recommended_index": 0,
+        "recommendation_reason": "最小影响",
+        "impact_scope_json": {"type": "paragraph", "start": 2, "end": 2},
+    })
+    await db.commit()
+
+    candidate_content = "开头不变。修订后的冲突场景。结尾不变。"
+    service = PlotPlanningService(db=db, user_id=1, novel_id=1, generator=FakePhase3WritingGenerator(
+        revision=LocalRevisionOutput(
+            candidate_content=candidate_content,
+            scope={"type": "paragraph", "start": 2, "end": 2},
+            diff={"removed": ["旧冲突场景"], "added": ["修订后的冲突场景"]},
+            plan_patch={"progression": [{"order": 2, "purpose": "承接补充因果"}]},
+            expanded_scope=False,
+            expansion_reason="",
+        )
+    ))
+    resolved_decision, new_plan, revision, resolved_run = await service.choose_decision(
+        decision.id, option_index=0,
+    )
+    assert revision.status == "candidate"
+    assert resolved_run.draft_content == original_draft
+
+    applied = await service.apply_draft_revision(revision.id)
+    assert applied.status == "applied"
+    assert applied.candidate_content == candidate_content
+    await db.refresh(resolved_run)
+    assert resolved_run.draft_content == candidate_content
+    assert resolved_run.planning_blocked is False
+    assert resolved_run.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_apply_candidate_marks_sibling_candidates_superseded(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.flush()
+
+    from app.services.plot_planning_service import PlotPlanningService
+    from app.repositories.plot_planning_repo import PlotPlanningRepo
+
+    pp_svc = PlotPlanningService(db, 1, 1, generator=FakePhase3WritingGenerator())
+    await pp_svc.update_foundation(
+        {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
+        change_reason="initial",
+    )
+    repo = PlotPlanningRepo(db)
+    unit = await pp_svc.create_plot_unit({
+        "title": "第一卷", "scope_type": "volume", "start_position": 1, "end_position": 10,
+    })
+    plan = await pp_svc.generate_plan(unit.id)
+    confirmed = await pp_svc.confirm_plan(unit.id, plan.id)
+
+    cp = ChapterPlan(id=3, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(cp)
+    brief = ChapterBrief(id=3, novel_id=1, chapter_plan_id=3, brief_json={"writing_goal": "测试"}, length_contract_json={}, status="ready")
+    db.add(brief)
+    await db.flush()
+    run = WritingRun(
+        id=3, novel_id=1, chapter_brief_id=3, context_package_id=1,
+        status="completed", draft_content="草稿内容",
+        planning_blocked=True,
+        context_snapshot_json={"plot_plan_revision_id": confirmed.id},
+    )
+    db.add(run)
+    await db.flush()
+
+    older = await repo.create_draft_revision(1, {
+        "writing_run_id": 3, "decision_id": None,
+        "base_content": "旧", "candidate_content": "候选A",
+        "scope_json": {}, "diff_json": {}, "reason": "first",
+        "status": "candidate",
+    })
+    newer = await repo.create_draft_revision(1, {
+        "writing_run_id": 3, "decision_id": None,
+        "base_content": "旧", "candidate_content": "候选B",
+        "scope_json": {}, "diff_json": {}, "reason": "second",
+        "status": "candidate",
+    })
+    await db.commit()
+
+    await pp_svc.apply_draft_revision(newer.id)
+
+    await db.refresh(older)
+    await db.refresh(newer)
+    assert older.status == "superseded"
+    assert newer.status == "applied"
+
+
+@pytest.mark.asyncio
+async def test_stale_plan_revision_raises_bad_request_on_choose(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.flush()
+
+    from app.services.plot_planning_service import PlotPlanningService
+    from app.repositories.plot_planning_repo import PlotPlanningRepo
+
+    pp_svc = PlotPlanningService(db, 1, 1, generator=FakePhase3WritingGenerator())
+    await pp_svc.update_foundation(
+        {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
+        change_reason="initial",
+    )
+    repo = PlotPlanningRepo(db)
+    unit = await pp_svc.create_plot_unit({
+        "title": "第一卷", "scope_type": "volume", "start_position": 1, "end_position": 10,
+    })
+    plan = await pp_svc.generate_plan(unit.id)
+    confirmed = await pp_svc.confirm_plan(unit.id, plan.id)
+
+    cp = ChapterPlan(id=4, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(cp)
+    brief = ChapterBrief(id=4, novel_id=1, chapter_plan_id=4, brief_json={"writing_goal": "测试"}, length_contract_json={}, status="ready")
+    db.add(brief)
+    await db.flush()
+    run = WritingRun(
+        id=4, novel_id=1, chapter_brief_id=4, context_package_id=1,
+        status="completed", draft_content="草稿内容",
+        planning_blocked=True,
+        context_snapshot_json={"plot_plan_revision_id": confirmed.id},
+    )
+    db.add(run)
+    await db.flush()
+
+    decision = await repo.create_decision(1, {
+        "plot_unit_id": unit.id,
+        "plot_plan_revision_id": confirmed.id,
+        "writing_run_id": 4,
+        "source": "during_generation",
+        "status": "pending",
+        "conflict_summary": "冲突",
+        "evidence_json": {},
+        "options_json": [
+            {"label": "A", "action": "a", "consequence": "c"},
+            {"label": "B", "action": "b", "consequence": "d"},
+        ],
+        "recommended_index": 0,
+        "recommendation_reason": "理由",
+        "impact_scope_json": {},
+    })
+    await db.commit()
+
+    confirmed.status = "stale"
+    await db.flush()
+
+    service = PlotPlanningService(db=db, user_id=1, novel_id=1, generator=FakePhase3WritingGenerator())
+    with pytest.raises(BadRequest, match="过期"):
+        await service.choose_decision(decision.id, option_index=0)
+
+
 @pytest.mark.asyncio
 async def test_conflict_evidence_is_schema_safe_and_choice_is_persisted(db):
     user = User(id=1, username="tester", hashed_password="x")
@@ -825,11 +1065,13 @@ async def test_choose_decision_rolls_back_on_generator_failure(db):
     with pytest.raises(ValueError, match="AI revision failed"):
         await service.choose_decision(decision.id, option_index=0)
 
-    # Decision should still be pending, old plan still active
+    # Decision should still be pending, old plan still active, run content unchanged
     still_pending = await repo.get_decision(decision.id, 1)
     assert still_pending.status == "pending"
     old_plan = await repo.get_plan_revision(confirmed.id, 1)
     assert old_plan.status == "active"
+    refreshed_run = await db.get(WritingRun, 20)
+    assert refreshed_run.draft_content == "草稿内容"
 
 
 @pytest.mark.asyncio
@@ -1159,11 +1401,10 @@ async def test_phase3_e2e_full_scenario(client, novel_and_headers, db):
     assert original_unaffected in draft_revision.candidate_content
     assert new_plan.version == active_plan["version"] + 1
 
-    # 11. Accept run (update status since choose_decision resolves but doesn't set completed)
+    # 11. Apply draft revision and accept run
     await db.refresh(conflicting_run)
-    conflicting_run.status = "completed"
-    conflicting_run.planning_blocked = False
-    await db.flush()
+    applied = await pp_svc_rev.apply_draft_revision(draft_revision.id)
+    assert applied.status == "applied"
     chapter_obj, extraction = await conflicting_ws.accept_writing_run(conflicting_run.id)
     assert chapter_obj.status == "draft"
 

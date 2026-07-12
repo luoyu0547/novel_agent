@@ -578,6 +578,9 @@ class WritingService:
                 "recommendation_reason": created.recommendation_reason,
                 "source": created.source,
             }
+            if run.status == "completed":
+                run.status = "decision_required"
+            run.planning_blocked = True
 
         issue_repo = ReviewIssueRepo(self.db)
         for qi in review.quality_issues:
