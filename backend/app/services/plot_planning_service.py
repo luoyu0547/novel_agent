@@ -5,12 +5,13 @@ import logging
 from copy import deepcopy
 from typing import Any, Optional
 
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.ai.plot_planning import ConflictOutput, LocalRevisionOutput
-from app.ai.writer import BaseWritingGenerator, FakePhase3WritingGenerator
+from app.ai.plot_planning import ConflictOutput, LocalRevisionOutput, PlotPlanOutput
+from app.ai.writer import BaseWritingGenerator, DeepSeekWritingGenerator
 from app.core.exceptions import BadRequest, NotFound
 from app.models.novel import Novel
 from app.models.plot_planning import (
@@ -39,8 +40,16 @@ class PlotPlanningService:
         self.db = db
         self.user_id = user_id
         self.novel_id = novel_id
-        self.generator = generator or FakePhase3WritingGenerator()
+        self.generator = generator or DeepSeekWritingGenerator()
         self.repo = PlotPlanningRepo(db)
+
+    @staticmethod
+    def _normalize_plot_plan_output(output: dict | PlotPlanOutput) -> dict:
+        if isinstance(output, BaseModel):
+            return output.model_dump()
+        if isinstance(output, dict):
+            return output
+        raise BadRequest("生成器返回无效剧情计划")
 
     async def _ensure_owned_novel(self) -> Novel:
         result = await self.db.execute(
@@ -179,9 +188,7 @@ class PlotPlanningService:
             await self.db.rollback()
             raise
 
-        if not isinstance(plan_output, dict):
-            await self.db.rollback()
-            raise BadRequest("生成器返回无效数据")
+        plan_output = self._normalize_plot_plan_output(plan_output)
 
         existing = await self.repo.list_plan_revisions(plot_unit_id)
         version = (existing[0].version if existing else 0) + 1

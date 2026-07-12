@@ -7,9 +7,10 @@ from app.ai.plot_planning import (
     DraftGenerationOutput,
     DraftReviewOutput,
     LocalRevisionOutput,
+    PlotPlanOutput,
 )
+from app.ai.writer import DeepSeekWritingGenerator, FakePhase3WritingGenerator
 from app.ai.quality_gate import FakeQualityGateAgent
-from app.ai.writer import FakePhase3WritingGenerator
 from app.core.exceptions import NotFound
 from app.models.novel import Novel, Chapter
 from app.models.plot_planning import (
@@ -23,6 +24,7 @@ from app.models.plot_planning import (
 from app.models.user import User
 from app.models.writing import ChapterPlan, ChapterBrief, WritingRun
 from app.schemas.plot_planning import ChooseDecisionRequest
+from app.services.plot_planning_service import PlotPlanningService
 from app.services.writing_service import WritingService
 
 
@@ -181,6 +183,27 @@ async def test_fake_generation_can_return_decision_required():
     result = await generator.generate_draft_result({"plot_plan": {}})
     assert result.status == "decision_required"
     assert result.conflict is not None
+
+
+# ---- Task 1: Production generator default and Pydantic normalization ----
+
+
+def test_plot_plan_output_normalizes_to_dict():
+    output = PlotPlanOutput(
+        starting_state="主角抵达边城",
+        stage_goal="查清旧案",
+        core_conflict="调查触动守城势力",
+        key_turns=[{"order": 1, "event": "发现线索", "required": True}],
+        progression=[{"order": 1, "chapter_position": 1, "purpose": "推进调查", "scenes": ["牢狱"]}],
+        completion_criteria=["找到关键证人"],
+    )
+    assert PlotPlanningService._normalize_plot_plan_output(output)["core_conflict"] == "调查触动守城势力"
+
+
+@pytest.mark.asyncio
+async def test_plot_planning_service_defaults_to_deepseek(db):
+    service = PlotPlanningService(db=db, user_id=1, novel_id=1)
+    assert isinstance(service.generator, DeepSeekWritingGenerator)
 
 
 # ---- Service-level tests (Task 3: Plot Planning Service & Context Package) ----
