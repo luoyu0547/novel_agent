@@ -29,6 +29,11 @@ const planInput = ref('')
 const generatingFor = ref<number | null>(null)
 const selectedUnitId = ref<number | null>(null)
 
+function handleSelectUnit(unit: PlotUnit) {
+  selectedUnitId.value = unit.id
+  emit('selectUnit', unit)
+}
+
 function handleCreate() {
   emit('create', { ...newUnit.value })
   newUnit.value = {
@@ -70,7 +75,7 @@ function handleConfirm(unitId: number, revisionId: number) {
     </div>
 
     <div v-for="unit in plotUnits" :key="unit.id" class="plot-unit-panel__item">
-      <div class="plot-unit-panel__item-header" @click="emit('selectUnit', unit)">
+      <div class="plot-unit-panel__item-header" @click="handleSelectUnit(unit)">
         <strong>{{ unit.title }}</strong>
         <el-tag size="small" :type="unit.status === 'active' ? 'success' : 'info'">
           {{ unit.status }}
@@ -89,6 +94,7 @@ function handleConfirm(unitId: number, revisionId: number) {
           size="small"
         />
         <el-button
+          data-testid="generate-plot-plan"
           size="small"
           type="primary"
           :loading="loading && generatingFor === unit.id"
@@ -97,7 +103,7 @@ function handleConfirm(unitId: number, revisionId: number) {
           生成计划
         </el-button>
         <div v-if="activePlan && activePlan.plot_unit_id === unit.id && activePlan.status === 'draft'" class="plot-unit-panel__plan-actions">
-          <el-button size="small" type="success" @click="handleConfirm(unit.id, activePlan.id)">
+          <el-button data-testid="confirm-plot-plan" size="small" type="success" @click="handleConfirm(unit.id, activePlan.id)">
             确认计划
           </el-button>
         </div>

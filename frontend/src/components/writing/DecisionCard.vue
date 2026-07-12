@@ -1,25 +1,25 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { PlanningDecision, DecisionOption } from '@/types/plotPlanning'
+import type { PlanningDecision } from '@/types/plotPlanning'
 
 const props = defineProps<{
   decision: PlanningDecision
 }>()
 
 const emit = defineEmits<{
-  choose: [payload: { optionIndex?: number; customIntent?: string }]
+  choose: [payload: { decisionId: number; optionIndex?: number; customIntent?: string }]
 }>()
 
 const customIntent = ref('')
 const showDetails = ref(false)
 
 function selectOption(index: number) {
-  emit('choose', { optionIndex: index })
+  emit('choose', { decisionId: props.decision.id, optionIndex: index })
 }
 
 function submitCustom() {
   if (!customIntent.value.trim()) return
-  emit('choose', { customIntent: customIntent.value.trim() })
+  emit('choose', { decisionId: props.decision.id, customIntent: customIntent.value.trim() })
   customIntent.value = ''
 }
 </script>

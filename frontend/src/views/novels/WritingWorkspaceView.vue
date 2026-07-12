@@ -4,10 +4,11 @@ import { usePlotPlanningStore } from '@/stores/plotPlanning'
 import { usePendingMemoryStore } from '@/stores/pendingMemory'
 import NovelWorkspaceTabs from '@/components/novels/NovelWorkspaceTabs.vue'
 import PlotUnitPanel from '@/components/writing/PlotUnitPanel.vue'
+import AuthorFoundationPanel from '@/components/writing/AuthorFoundationPanel.vue'
 import DecisionCard from '@/components/writing/DecisionCard.vue'
 import DraftRevisionDiff from '@/components/writing/DraftRevisionDiff.vue'
-import type { ChapterBrief, WritingRun } from '@/types/writing'
-import type { PlotUnitCreate } from '@/types/plotPlanning'
+import type { WritingRun } from '@/types/writing'
+import type { PlotUnitCreate, PlotUnit } from '@/types/plotPlanning'
 import * as writingApi from '@/api/writing'
 
 const route = useRoute()
@@ -77,14 +78,24 @@ async function handleGeneratePlan() {
 
 async function handleGenerateBrief() {
   if (!store.latestPlan) return
-  await store.generateChapterBrief(novelId, store.latestPlan.id)
+  await store.generateChapterBrief(
+    novelId,
+    store.latestPlan.id,
+    ppStore.activePlan?.id,
+    authorInput.value || undefined,
+  )
   ElMessage.success('任务书已生成')
   activeSection.value = 'context'
 }
 
 async function handleGenerateContext() {
   if (!store.latestBrief) return
-  await store.generateContextPackage(novelId, store.latestBrief.id)
+  await store.generateContextPackage(
+    novelId,
+    store.latestBrief.id,
+    ppStore.activePlan?.id,
+    authorInput.value || undefined,
+  )
   ElMessage.success('上下文包已生成')
   activeSection.value = 'draft'
 }
@@ -92,7 +103,12 @@ async function handleGenerateContext() {
 async function handleGenerateDraft() {
   if (!store.latestBrief) return
   try {
-    const run = await store.createWritingRun(novelId, store.latestBrief.id)
+    await store.createWritingRun(
+      novelId,
+      store.latestBrief.id,
+      ppStore.activePlan?.id,
+      authorInput.value || undefined,
+    )
     ElMessage.success('草稿已生成')
   } catch {
     ElMessage.error('生成草稿失败')
@@ -123,18 +139,18 @@ const foundationOutline = ref('')
 const foundationIntent = ref('')
 const foundationStageGoal = ref('')
 
-async function handleSaveFoundation() {
-  await ppStore.updateFoundation(novelId, {
-    outline: foundationOutline.value,
-    current_intent: foundationIntent.value,
-    stage_goal: foundationStageGoal.value,
-  })
+async function handleSaveFoundation(data: { outline?: string; current_intent?: string; stage_goal?: string }) {
+  await ppStore.updateFoundation(novelId, data)
   ElMessage.success('作者资料已保存')
 }
 
 async function handleCreatePlotUnit(data: PlotUnitCreate) {
   await ppStore.createPlotUnit(novelId, data)
   ElMessage.success('剧情单元已创建')
+}
+
+async function handlePlotUnitSelect(unit: PlotUnit) {
+  await ppStore.selectPlotUnit(novelId, unit)
 }
 
 async function handleGeneratePlotPlan(plotUnitId: number, authorInput: string) {
@@ -149,10 +165,8 @@ async function handleConfirmPlan(plotUnitId: number, revisionId: number) {
   ElMessage.success('计划已确认')
 }
 
-async function handleDecisionChoose(payload: { optionIndex?: number; customIntent?: string }) {
-  if (!ppStore.pendingDecisions.length) return
-  const decision = ppStore.pendingDecisions[0]
-  await ppStore.chooseDecision(novelId, decision!.id, {
+async function handleDecisionChoose(payload: { decisionId: number; optionIndex?: number; customIntent?: string }) {
+  await ppStore.chooseDecision(novelId, payload.decisionId, {
     option_index: payload.optionIndex,
     custom_intent: payload.customIntent,
   })
@@ -161,11 +175,9 @@ async function handleDecisionChoose(payload: { optionIndex?: number; customInten
 }
 
 async function handleApplyDraft(revisionId: number) {
+  await ppStore.applyDraftRevision(novelId, revisionId)
   ElMessage.success('草稿修订已应用')
-}
-
-async function handleReplaceDraft(revisionId: number) {
-  ElMessage.success('草稿已替换')
+  await store.fetchWritingRuns(novelId)
 }
 
 async function handleReviewRun(runId: number) {
@@ -242,6 +254,18 @@ async function saveBlueprint(bpId: number) {
         </div>
       </el-card>
 
+      <!-- 1.5. Author Foundation (Phase 3) -->
+      <el-card class="writing__section" shadow="never">
+        <template #header>
+          <span>作者基础设定</span>
+        </template>
+        <AuthorFoundationPanel
+          :foundation="ppStore.foundation"
+          :loading="ppStore.loading"
+          @save="handleSaveFoundation"
+        />
+      </el-card>
+
       <!-- 2. Chapter Plan -->
       <el-card class="writing__section" shadow="never">
         <template #header>
@@ -261,6 +285,22 @@ async function saveBlueprint(bpId: number) {
         >
           生成下一章计划
         </el-button>
+      </el-card>
+
+      <!-- 2.5. Plot Unit Panel (Phase 3) -->
+      <el-card class="writing__section" shadow="never">
+        <template #header>
+          <span>剧情单元规划</span>
+        </template>
+        <PlotUnitPanel
+          :plot-units="ppStore.plotUnits"
+          :active-plan="ppStore.activePlan"
+          :loading="ppStore.loading"
+          @create="handleCreatePlotUnit"
+          @generate-plan="handleGeneratePlotPlan"
+          @confirm-plan="handleConfirmPlan"
+          @select-unit="handlePlotUnitSelect"
+        />
       </el-card>
 
       <!-- 3. Chapter Brief -->
@@ -288,7 +328,7 @@ async function saveBlueprint(bpId: number) {
         <el-button
           type="primary"
           class="writing__btn"
-          :disabled="!store.latestPlan"
+          :disabled="!store.latestPlan || !ppStore.activePlan"
           :loading="store.loading"
           @click="handleGenerateBrief"
         >
@@ -309,7 +349,7 @@ async function saveBlueprint(bpId: number) {
         <el-button
           type="primary"
           class="writing__btn"
-          :disabled="!store.latestBrief"
+          :disabled="!store.latestBrief || !ppStore.activePlan"
           :loading="store.loading"
           @click="handleGenerateContext"
         >
@@ -360,7 +400,7 @@ async function saveBlueprint(bpId: number) {
         <el-button
           type="primary"
           class="writing__btn"
-          :disabled="!store.latestContext || !!decisionRequiredRun"
+          :disabled="!store.latestContext || !!decisionRequiredRun || !ppStore.activePlan"
           :loading="store.loading"
           @click="handleGenerateDraft"
         >
@@ -390,7 +430,6 @@ async function saveBlueprint(bpId: number) {
           :revision="ppStore.currentDraftRevision"
           :selected="true"
           @apply="handleApplyDraft"
-          @replace="handleReplaceDraft"
         />
       </el-card>
     </div>

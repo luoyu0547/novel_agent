@@ -5,6 +5,8 @@ import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import DecisionCard from '@/components/writing/DecisionCard.vue'
 import DraftRevisionDiff from '@/components/writing/DraftRevisionDiff.vue'
+import PlotUnitPanel from '@/components/writing/PlotUnitPanel.vue'
+import AuthorFoundationPanel from '@/components/writing/AuthorFoundationPanel.vue'
 import WritingEditor from '@/components/editor/WritingEditor.vue'
 import { usePlotPlanningStore } from '@/stores/plotPlanning'
 
@@ -13,7 +15,7 @@ vi.mock('vue-router', async () => {
   const actual = await vi.importActual('vue-router')
   return {
     ...(actual as any),
-    useRouter: () => ({ back: vi.fn(), push: vi.fn() }),
+    useRouter: () => ({ back: vi.fn<() => void>(), push: vi.fn<() => void>() }),
     useRoute: () => ({
       params: { id: '1' },
       query: {},
@@ -30,10 +32,10 @@ vi.mock('vue-router', async () => {
 
 vi.mock('@/api/client', () => ({
   default: {
-    get: vi.fn(),
-    post: vi.fn(),
-    put: vi.fn(),
-    delete: vi.fn(),
+    get: vi.fn<() => void>(),
+    post: vi.fn<() => void>(),
+    put: vi.fn<() => void>(),
+    delete: vi.fn<() => void>(),
   },
 }))
 
@@ -57,6 +59,36 @@ const globalStubs = {
 }
 
 // --- Fixtures ---
+const plotUnitFixture = {
+  id: 1,
+  novel_id: 1,
+  title: '主角的抉择',
+  scope_type: 'chapter',
+  start_position: 1,
+  end_position: 3,
+  author_goal: '让主角面对道德困境',
+  start_state: '主角处于安全环境',
+  end_state: '主角做出关键选择',
+  foundation_revision_id: 1,
+  status: 'active',
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+}
+
+const planFixture = {
+  id: 1,
+  novel_id: 1,
+  plot_unit_id: 1,
+  foundation_revision_id: 1,
+  based_on_published_chapter_id: null,
+  version: 1,
+  plan_json: {},
+  change_reason: '初始计划',
+  status: 'draft' as const,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+}
+
 const decisionFixture = {
   id: 1,
   novel_id: 1,
@@ -100,15 +132,35 @@ const draftRevisionFixture = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
+const foundationFixture = {
+  id: 1,
+  novel_id: 1,
+  outline: '测试大纲',
+  current_intent: '测试意图',
+  stage_goal: '测试目标',
+  constraints_json: {},
+  version: 1,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+}
+
 // =============================================
-// PlotPlanning spec
+// PlotUnitPanel spec
 // =============================================
 describe('PlotUnitPanel', () => {
-  it('placeholder until PlotUnitPanel is imported', () => {
-    expect(true).toBe(true)
+  it('selects a plot unit and emits plan actions', async () => {
+    const wrapper = mount(PlotUnitPanel, {
+      props: { plotUnits: [plotUnitFixture], activePlan: planFixture, loading: false },
+      global: { stubs: globalStubs },
+    })
+    await wrapper.find('.plot-unit-panel__item-header').trigger('click')
+    expect(wrapper.emitted('selectUnit')?.[0]).toEqual([plotUnitFixture])
   })
 })
 
+// =============================================
+// DecisionCard spec
+// =============================================
 describe('DecisionCard', () => {
   it('renders a decision card with recommendation and two executable options', () => {
     const wrapper = mount(DecisionCard, {
@@ -121,21 +173,28 @@ describe('DecisionCard', () => {
     expect(wrapper.text()).toContain('调整未来目标')
   })
 
-  it('emits choose event with option_index when option button clicked', () => {
+  it('emits choose with decisionId and optionIndex when option button clicked', async () => {
     const wrapper = mount(DecisionCard, {
       props: { decision: decisionFixture },
       global: { stubs: globalStubs },
     })
-    expect(wrapper.find('.decision-card__option').exists()).toBe(true)
+    const buttons = wrapper.findAll('button')
+    const chooseBtn = buttons.find(b => b.text().includes('选择此方案'))
+    expect(chooseBtn).toBeDefined()
+    await chooseBtn!.trigger('click')
+    expect(wrapper.emitted('choose')?.[0]).toEqual([{ decisionId: 1, optionIndex: 0 }])
   })
 
-  it('emits choose event with custom_intent when custom text is provided', () => {
+  it('emits choose with decisionId and customIntent when custom intent is submitted', async () => {
     const wrapper = mount(DecisionCard, {
       props: { decision: decisionFixture },
       global: { stubs: globalStubs },
     })
-    expect(wrapper.text()).toContain('补充因果')
-    expect(wrapper.text()).toContain('调整未来目标')
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('希望主角原谅')
+    const submitBtn = wrapper.findAll('button').find(b => b.text().includes('调整未来目标'))
+    await submitBtn!.trigger('click')
+    expect(wrapper.emitted('choose')?.[0]).toEqual([{ decisionId: 1, customIntent: '希望主角原谅' }])
   })
 
   it('does not expand evidence chain by default', () => {
@@ -148,6 +207,9 @@ describe('DecisionCard', () => {
   })
 })
 
+// =============================================
+// DraftRevisionDiff spec
+// =============================================
 describe('DraftRevisionDiff', () => {
   it('renders unchanged, deleted, and added segments', () => {
     const wrapper = mount(DraftRevisionDiff, {
@@ -160,38 +222,70 @@ describe('DraftRevisionDiff', () => {
     expect(wrapper.text()).toContain('这是将被替换的旧内容')
   })
 
-  it('keeps apply/replace buttons disabled until candidate is selected', () => {
+  it('keeps apply button disabled until candidate is selected', () => {
     const wrapper = mount(DraftRevisionDiff, {
       props: { revision: draftRevisionFixture, selected: false },
       global: { stubs: globalStubs },
     })
-    const buttons = wrapper.findAll('button')
-    for (const btn of buttons) {
-      if (btn.text().includes('应用') || btn.text().includes('替换')) {
-        expect(btn.attributes('disabled')).toBeDefined()
-      }
-    }
+    const applyBtn = wrapper.findAll('button').find(b => b.text().includes('应用'))
+    expect(applyBtn?.attributes('disabled')).toBeDefined()
   })
 
-  it('enables apply/replace buttons when candidate is selected', () => {
+  it('enables apply button when candidate is selected', () => {
     const wrapper = mount(DraftRevisionDiff, {
       props: { revision: draftRevisionFixture, selected: true },
       global: { stubs: globalStubs },
     })
-    const buttons = wrapper.findAll('button')
-    let hasEnabled = false
-    for (const btn of buttons) {
-      if ((btn.text().includes('应用') || btn.text().includes('替换')) && btn.attributes('disabled') === undefined) {
-        hasEnabled = true
-        break
-      }
-    }
-    expect(hasEnabled).toBe(true)
+    const applyBtn = wrapper.findAll('button').find(b => b.text().includes('应用'))
+    expect(applyBtn?.attributes('disabled')).toBeUndefined()
+  })
+
+  it('does not render a replace button', () => {
+    const wrapper = mount(DraftRevisionDiff, {
+      props: { revision: draftRevisionFixture, selected: true },
+      global: { stubs: globalStubs },
+    })
+    const replaceBtn = wrapper.findAll('button').find(b => b.text().includes('替换'))
+    expect(replaceBtn).toBeUndefined()
+  })
+
+  it('emits apply with revision id when apply button clicked', async () => {
+    const wrapper = mount(DraftRevisionDiff, {
+      props: { revision: draftRevisionFixture, selected: true },
+      global: { stubs: globalStubs },
+    })
+    const applyBtn = wrapper.findAll('button').find(b => b.text().includes('应用'))
+    await applyBtn!.trigger('click')
+    expect(wrapper.emitted('apply')?.[0]).toEqual([1])
   })
 })
 
 // =============================================
-// WritingEditor spec (locked chapter behavior)
+// AuthorFoundationPanel spec
+// =============================================
+describe('AuthorFoundationPanel', () => {
+  it('renders foundation data and save button', () => {
+    const wrapper = mount(AuthorFoundationPanel, {
+      props: { foundation: foundationFixture, loading: false },
+      global: { stubs: globalStubs },
+    })
+    expect(wrapper.find('[data-testid="save-foundation"]').exists()).toBe(true)
+  })
+
+  it('emits save with outline, intent, and stage goal when save button clicked', async () => {
+    const wrapper = mount(AuthorFoundationPanel, {
+      props: { foundation: foundationFixture, loading: false },
+      global: { stubs: globalStubs },
+    })
+    await wrapper.find('[data-testid="save-foundation"]').trigger('click')
+    expect(wrapper.emitted('save')?.[0]).toEqual([
+      { outline: '测试大纲', current_intent: '测试意图', stage_goal: '测试目标' },
+    ])
+  })
+})
+
+// =============================================
+// WritingEditor spec
 // =============================================
 describe('WritingEditor locked chapter', () => {
   it('does not expose publish action for locked chapters', () => {
@@ -318,7 +412,7 @@ describe('Phase 3 API contracts', () => {
     const store = usePlotPlanningStore()
     store.currentDraftRevision = null
 
-    await expect(store.chooseDecision(1, 1, { option_index: 0 })).rejects.toThrow()
+    await expect(store.chooseDecision(1, 1, { option_index: 0 })).rejects.toThrow('API error')
     expect(store.currentDraftRevision).toBeNull()
   })
 })

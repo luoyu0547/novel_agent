@@ -9,7 +9,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   apply: [revisionId: number]
-  replace: [revisionId: number]
 }>()
 
 const diff = computed(() => props.revision.diff_json as {
@@ -50,14 +49,6 @@ const diff = computed(() => props.revision.diff_json as {
         @click="emit('apply', revision.id)"
       >
         应用
-      </el-button>
-      <el-button
-        size="small"
-        type="warning"
-        :disabled="!selected"
-        @click="emit('replace', revision.id)"
-      >
-        替换
       </el-button>
     </div>
   </div>
