@@ -1280,14 +1280,26 @@ async def test_update_foundation_supersedes_pending_decisions(db):
 
 
 @pytest.mark.asyncio
-async def test_phase3_e2e_full_scenario(client, novel_and_headers, db):
+async def test_phase3_e2e_full_scenario(client, novel_and_headers, db, monkeypatch):
     from app.services.writing_service import WritingService
     from app.services.plot_planning_service import PlotPlanningService
     from app.models.writing import ChapterPlan, ChapterBrief, WritingRun
     from app.ai.plot_planning import LocalRevisionOutput
+    from app.api import planning as planning_api
 
     novel, headers = novel_and_headers
     novel_id = novel["id"]
+
+    production_service_class = planning_api.PlotPlanningService
+
+    def deterministic_planning_service(*args, **kwargs):
+        return production_service_class(
+            *args,
+            generator=FakePhase3WritingGenerator(),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(planning_api, "PlotPlanningService", deterministic_planning_service)
 
     # 1. Set author foundation via API
     resp = await client.put(

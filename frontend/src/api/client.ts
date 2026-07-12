@@ -20,7 +20,7 @@ client.interceptors.response.use(
     if (apiResponse.code !== 0) {
       return Promise.reject(new Error(apiResponse.message))
     }
-    return apiResponse.data as any
+    return apiResponse.data as never
   },
   (error) => {
     if (error.response?.status === 401) {

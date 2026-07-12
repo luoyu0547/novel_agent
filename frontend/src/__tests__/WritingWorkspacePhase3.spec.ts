@@ -3,13 +3,15 @@ import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import WritingWorkspaceView from '@/views/novels/WritingWorkspaceView.vue'
 import { usePlotPlanningStore } from '@/stores/plotPlanning'
-import { useWritingStore } from '@/stores/writing'
 import * as writingApi from '@/api/writing'
 import * as planningApi from '@/api/planning'
 import DecisionCard from '@/components/writing/DecisionCard.vue'
 
 vi.mock('vue-router', () => ({
-  useRouter: () => ({ back: vi.fn(), push: vi.fn() }),
+  useRouter: () => ({
+    back: vi.fn<() => void>(),
+    push: vi.fn<(...args: unknown[]) => unknown>(),
+  }),
   useRoute: () => ({
     params: { id: '1' },
     query: {},
@@ -25,10 +27,10 @@ vi.mock('vue-router', () => ({
 
 vi.mock('@/api/client', () => ({
   default: {
-    get: vi.fn(),
-    post: vi.fn(),
-    put: vi.fn(),
-    delete: vi.fn(),
+    get: vi.fn<(...args: unknown[]) => unknown>(),
+    post: vi.fn<(...args: unknown[]) => unknown>(),
+    put: vi.fn<(...args: unknown[]) => unknown>(),
+    delete: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
 
@@ -197,7 +199,7 @@ describe('WritingWorkspace Phase 3 flow', () => {
       (b) => b.text().includes('生成计划'),
     )[0]
     expect(generateBtn).toBeDefined()
-    await generateBtn.trigger('click')
+    await generateBtn!.trigger('click')
 
     expect(planningApi.generatePlotPlan).toHaveBeenCalledWith(1, 1, '调查主线')
   })
@@ -260,14 +262,16 @@ describe('WritingWorkspace Phase 3 flow', () => {
     expect(decisionCards.length).toBe(2)
 
     const secondCard = decisionCards[1]
-    const buttons = secondCard.findAll('button')
+    expect(secondCard).toBeDefined()
+    const buttons = secondCard!.findAll('button')
     const chooseBtn = buttons.find((b) => b.text().includes('选择此方案'))
     expect(chooseBtn).toBeDefined()
     await chooseBtn!.trigger('click')
 
     expect(planningApi.chooseDecision).toHaveBeenCalled()
     const callArgs = vi.mocked(planningApi.chooseDecision).mock.calls[0]
-    expect(callArgs[0]).toBe(1)
-    expect(callArgs[1]).toBe(2)
+    expect(callArgs).toBeDefined()
+    expect(callArgs![0]).toBe(1)
+    expect(callArgs![1]).toBe(2)
   })
 })

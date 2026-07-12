@@ -12,9 +12,9 @@ import { usePlotPlanningStore } from '@/stores/plotPlanning'
 
 // --- Mock vue-router ---
 vi.mock('vue-router', async () => {
-  const actual = await vi.importActual('vue-router')
+  const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
   return {
-    ...(actual as any),
+    ...actual,
     useRouter: () => ({ back: vi.fn<() => void>(), push: vi.fn<() => void>() }),
     useRoute: () => ({
       params: { id: '1' },

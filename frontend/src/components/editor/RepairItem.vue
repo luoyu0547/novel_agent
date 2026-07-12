@@ -12,7 +12,6 @@ const emit = defineEmits<{
 }>()
 
 const isLog = computed(() => props.type === 'log')
-const isPending = computed(() => props.type === 'pending')
 
 const selectedOption = ref<number>()
 const intentText = ref('')

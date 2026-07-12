@@ -4,6 +4,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.ai.quality_gate import FakeQualityGateAgent
+from app.ai.writer import FakeWritingGenerator
 
 
 @pytest.fixture
@@ -11,6 +13,24 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+
+@pytest.fixture(autouse=True)
+def fake_writing_service(monkeypatch):
+    """Keep route-level Phase 1 tests deterministic and offline."""
+    from app.api import writing as writing_api
+
+    production_service = writing_api.WritingService
+
+    def build_test_service(*args, **kwargs):
+        return production_service(
+            *args,
+            generator=FakeWritingGenerator(),
+            gate_agent=FakeQualityGateAgent(),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(writing_api, "WritingService", build_test_service)
 
 
 async def register_headers(client, username: str) -> dict[str, str]:

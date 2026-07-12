@@ -7,7 +7,7 @@
 export {}
 declare global {
   const EffectScope: typeof import('vue').EffectScope
-  const ElMessage: typeof import('element-plus/es').ElMessage
+  const ElMessage: typeof import('element-plus').ElMessage
   const ElMessageBox: typeof import('element-plus').ElMessageBox
   const computed: typeof import('vue').computed
   const createApp: typeof import('vue').createApp

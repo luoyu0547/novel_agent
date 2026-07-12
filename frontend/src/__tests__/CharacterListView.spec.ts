@@ -4,6 +4,7 @@ import { createTestingPinia } from '@pinia/testing'
 import CharacterListView from '@/views/novels/CharacterListView.vue'
 import { useMemoryStore } from '@/stores/memory'
 import { useNovelStore } from '@/stores/novels'
+import type { CharacterProfile, NovelOut } from '@/types'
 
 vi.mock('vue-router', () => ({
   useRoute: () => ({ params: { id: '1' } }),
@@ -14,12 +15,29 @@ const globalStubs = {
   NovelWorkspaceTabs: { template: '<div class="novel-tabs" />' },
 }
 
+type CharacterListViewModel = {
+  showModal: boolean
+  editingId: number | null
+  openCreate: () => void
+  openEdit: (character: CharacterProfile) => void
+}
+
+function getViewModel(wrapper: ReturnType<typeof mount>): CharacterListViewModel {
+  return wrapper.vm as unknown as CharacterListViewModel
+}
+
 describe('CharacterListView', () => {
   function createWrapper() {
     const pinia = createTestingPinia({ createSpy: vi.fn, stubActions: true })
     const novelStore = useNovelStore()
     const memoryStore = useMemoryStore()
-    novelStore.currentNovel = { id: 1, title: '测试小说', description: null, created_at: '', updated_at: '' } as any
+    novelStore.currentNovel = {
+      id: 1,
+      title: '测试小说',
+      description: null,
+      created_at: '',
+      updated_at: '',
+    } satisfies NovelOut
     const wrapper = mount(CharacterListView, { global: { plugins: [pinia], stubs: globalStubs } })
     return { wrapper, memoryStore, novelStore }
   }
@@ -51,14 +69,14 @@ describe('CharacterListView', () => {
 
   it('showModal is false by default', () => {
     const { wrapper } = createWrapper()
-    expect((wrapper.vm as any).showModal).toBe(false)
+    expect(getViewModel(wrapper).showModal).toBe(false)
   })
 
   it('openCreate resets form and shows dialog', () => {
     const { wrapper } = createWrapper()
-    ;(wrapper.vm as any).openCreate()
-    expect((wrapper.vm as any).showModal).toBe(true)
-    expect((wrapper.vm as any).editingId).toBeNull()
+    getViewModel(wrapper).openCreate()
+    expect(getViewModel(wrapper).showModal).toBe(true)
+    expect(getViewModel(wrapper).editingId).toBeNull()
   })
 
   it('openEdit populates form with character data', () => {
@@ -69,8 +87,8 @@ describe('CharacterListView', () => {
       behavior_rules: ['不择手段', '狡猾'], current_state: '掌权',
       novel_id: 1, created_at: '', updated_at: '',
     }
-    ;(wrapper.vm as any).openEdit(char)
-    expect((wrapper.vm as any).showModal).toBe(true)
-    expect((wrapper.vm as any).editingId).toBe(5)
+    getViewModel(wrapper).openEdit(char)
+    expect(getViewModel(wrapper).showModal).toBe(true)
+    expect(getViewModel(wrapper).editingId).toBe(5)
   })
 })

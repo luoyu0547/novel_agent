@@ -7,7 +7,7 @@ import PlotUnitPanel from '@/components/writing/PlotUnitPanel.vue'
 import AuthorFoundationPanel from '@/components/writing/AuthorFoundationPanel.vue'
 import DecisionCard from '@/components/writing/DecisionCard.vue'
 import DraftRevisionDiff from '@/components/writing/DraftRevisionDiff.vue'
-import type { WritingRun } from '@/types/writing'
+import type { NovelBlueprint, WritingRun } from '@/types/writing'
 import type { PlotUnitCreate, PlotUnit } from '@/types/plotPlanning'
 import * as writingApi from '@/api/writing'
 
@@ -19,6 +19,7 @@ const novelId = Number(route.params.id)
 
 const authorInput = ref('')
 const showBlueprintEditor = ref(false)
+const editingBlueprintId = ref<number | null>(null)
 const blueprintText = ref('')
 const activeSection = ref<'blueprint' | 'plan' | 'brief' | 'context' | 'draft' | 'decision' | 'revision'>('blueprint')
 
@@ -184,7 +185,7 @@ async function handleReviewRun(runId: number) {
   try {
     const result = await writingApi.reviewWritingRun(novelId, runId)
     if (result.decision) {
-      ppStore.pendingDecisions.push(result.decision as any)
+      ppStore.pendingDecisions.push(result.decision)
       activeSection.value = 'decision'
       ElMessage.info('审查发现需要处理的问题')
     } else {
@@ -203,9 +204,19 @@ watch(() => ppStore.foundation, (f) => {
   }
 }, { immediate: true })
 
-function editBlueprint(bp: any) {
+function editBlueprint(bp: NovelBlueprint) {
+  editingBlueprintId.value = bp.id
   blueprintText.value = JSON.stringify(bp.content_json, null, 2)
   showBlueprintEditor.value = true
+}
+
+function editActiveBlueprint() {
+  if (store.activeBlueprint) editBlueprint(store.activeBlueprint)
+}
+
+async function handleSaveBlueprint() {
+  if (editingBlueprintId.value === null) return
+  await saveBlueprint(editingBlueprintId.value)
 }
 
 async function saveBlueprint(bpId: number) {
@@ -214,9 +225,15 @@ async function saveBlueprint(bpId: number) {
     await store.updateBlueprint(novelId, bpId, { content_json: parsed })
     ElMessage.success('蓝图已保存')
     showBlueprintEditor.value = false
+    editingBlueprintId.value = null
   } catch {
     ElMessage.error('JSON 格式错误')
   }
+}
+
+function getContextListLength(key: string) {
+  const value = store.latestContext?.package_json[key]
+  return Array.isArray(value) ? value.length : 0
 }
 </script>
 
@@ -250,7 +267,14 @@ async function saveBlueprint(bpId: number) {
         <div v-else>
           <el-alert type="success" :closable="false" title="蓝图已激活" />
           <pre class="writing__json">{{ blueprintText }}</pre>
-          <el-button size="small" @click="editBlueprint(store.activeBlueprint)">编辑蓝图</el-button>
+          <el-button size="small" @click="editActiveBlueprint">编辑蓝图</el-button>
+        </div>
+        <div v-if="showBlueprintEditor" class="writing__blueprint-editor">
+          <el-input v-model="blueprintText" type="textarea" :rows="12" />
+          <div class="writing__actions">
+            <el-button type="primary" size="small" @click="handleSaveBlueprint">保存蓝图</el-button>
+            <el-button size="small" @click="showBlueprintEditor = false">取消</el-button>
+          </div>
         </div>
       </el-card>
 
@@ -342,8 +366,8 @@ async function saveBlueprint(bpId: number) {
           <span>4. 上下文包</span>
         </template>
         <div v-if="store.latestContext">
-          <p><strong>角色数：</strong>{{ (store.latestContext.package_json as any).characters?.length || 0 }}</p>
-          <p><strong>设定数：</strong>{{ (store.latestContext.package_json as any).world_settings?.length || 0 }}</p>
+          <p><strong>角色数：</strong>{{ getContextListLength('characters') }}</p>
+          <p><strong>设定数：</strong>{{ getContextListLength('world_settings') }}</p>
           <p><strong>蓝图摘要：</strong>已包含</p>
         </div>
         <el-button

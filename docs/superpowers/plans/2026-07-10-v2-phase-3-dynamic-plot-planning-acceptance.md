@@ -63,7 +63,7 @@ This two-phase design gives authors control over when revisions take effect.
 
 | File | Passed | Failed | Notes |
 |------|--------|--------|-------|
-| `test_phase_3_dynamic_plot_planning_integration.py` | 3 | 0 | Runs against real DeepSeek API via `DEEPSEEK_API_KEY` |
+| `test_phase_3_dynamic_plot_planning_integration.py` | 1 | 2 | One context-only test passes; two real DeepSeek calls are blocked by DNS/network in the current environment |
 
 Requires `DEEPSEEK_API_KEY` in `.env`. Commands:
 ```sh
@@ -71,18 +71,18 @@ Requires `DEEPSEEK_API_KEY` in `.env`. Commands:
 .venv/bin/python -m pytest tests/test_phase_3_dynamic_plot_planning.py tests/test_phase_3_dynamic_plot_planning_integration.py -q
 ```
 
-Integration tests verified:
-1. `test_real_context_includes_author_foundation_and_locked_chapters` — context package correctly includes foundation data and locked chapter canon
-2. `test_real_draft_result_contains_structured_fields` — DeepSeek generates structured draft output with conflict/decision handling
-3. `test_real_generate_plot_plan_prompt_contains_keywords` — plan generation prompt is sent and returns valid JSON
+Latest isolated run:
+1. `test_real_context_includes_author_foundation_and_locked_chapters` — ✅ context package correctly includes foundation data and locked chapter canon
+2. `test_real_planning_differs_from_fake` — ⏸️ blocked before model response by `openai.APIConnectionError` (`nodename nor servname provided`)
+3. `test_real_draft_result_contains_structured_fields` — ⏸️ blocked before model response by the same DNS/network error
 
-Note: `test_real_draft_result_contains_structured_fields` is flaky — DeepSeek may return `affected_future_scope` as string instead of dict, triggering `AIProtocolError`. Pass rate ~90% on re-run.
+The failures are environmental rather than application assertions: the sandbox cannot resolve or reach the DeepSeek endpoint. Re-run the command in an environment with outbound access to complete the live-AI check.
 
 ### Backend — Pre-existing Tests (non-Phase-3)
 
 | File | Status | Notes |
 |------|--------|-------|
-| `test_phase_1_writing.py` | ❌ 1 failure | `test_blueprint_generate_and_activate` — 401 on activate endpoint (pre-existing, unrelated to Phase 3). Root cause: `PUT /blueprints/{id}/activate` returns 401 when token is not provided as Bearer in Authorization header; the specific test's `client.put` call does not pass headers so the endpoint's `get_current_user` dependency fails. |
+| `test_phase_1_writing.py` | ✅ 12 passed | Added an autouse route-level fixture that injects `FakeWritingGenerator` and `FakeQualityGateAgent`, matching the file's stated offline-test contract. |
 | `test_phase_1_writing_integration.py` | ⏭️ Skipped | Requires DeepSeek; not part of Phase 3 scope |
 | `test_phase_1_manual_memory.py` | ⏭️ Timed out 120s | Requires DeepSeek call; not part of Phase 3 scope |
 | `test_phase_2_ai_extract.py` | ⏭️ Skipped | Requires DeepSeek; not part of Phase 3 scope |
@@ -94,9 +94,9 @@ Note: `test_real_draft_result_contains_structured_fields` is flaky — DeepSeek 
 | Command | Result |
 |---------|--------|
 | `npm run test:unit` | ✅ 42/42 passed (7 files, including 4 new Phase 3 workspace tests) |
-| `npm run type-check` | ❌ Pre-existing `ElMessage`/`watch` auto-import resolution errors in `WritingWorkspaceView.vue` (lines 165-218) — these exist in the parent commit and are not caused by Phase 3 changes. Root cause: `unplugin-auto-import` type declarations not refreshed after dependency install. |
-| `npm run lint` | ❌ 7 pre-existing oxlint errors: `vi.fn()` missing type parameters in `PlotPlanning.spec.ts` and `WritingWorkspacePhase3.spec.ts`. Pre-existing project configuration issue. |
-| `npm run build` | ❌ Blocked by pre-existing type-check errors; `vite build` proceeds once type-check is bypassed. |
+| `npm run type-check` | ✅ Passed (`vue-tsc --build`) |
+| `npm run lint` | ✅ Passed (oxlint + eslint) |
+| `npm run build` | ✅ Passed (type-check + Vite production build; Rolldown only reports non-fatal dependency annotation warnings) |
 
 **New frontend test file:** `src/__tests__/WritingWorkspacePhase3.spec.ts`
 
@@ -109,19 +109,28 @@ Note: `test_real_draft_result_contains_structured_fields` is flaky — DeepSeek 
 
 ---
 
-## Diff Scope & Locked Chapter Safety Check
+## Verification Fixes & Locked Chapter Safety Check
 
-### Files Changed (uncommitted)
+### Verification fixes
+
+The following closure fixes were applied:
+
 ```
-backend/tests/test_phase_3_dynamic_plot_planning.py          | 20 ++++++++---
-frontend/src/__tests__/WritingWorkspacePhase3.spec.ts       | 225 +++++++++++++++++++++++++++++++++++++++++++
-docs/superpowers/plans/2026-07-10-v2-phase-3-dynamic-plot-planning-acceptance.md | 82 +++++++++++---------
+backend/tests/test_phase_3_dynamic_plot_planning.py
+backend/tests/test_phase_1_writing.py
+frontend/auto-imports.d.ts
+frontend/env.d.ts
+frontend/src/__tests__/CharacterListView.spec.ts
+frontend/src/__tests__/PlotPlanning.spec.ts
+frontend/src/__tests__/WritingWorkspacePhase3.spec.ts
+frontend/src/api/client.ts
+frontend/src/components/editor/RepairItem.vue
+frontend/src/views/novels/WritingWorkspaceView.vue
 ```
-- Backend E2E scenario now uses REST API for `apply_draft_revision` instead of direct service call
-- Added assert that `resolved_run.draft_content` is unchanged after `choose_decision`
-- Added pending-decision publish rejection check in E2E scenario
-- Added cross-user 404 checks for decision, apply, and plan endpoints
-- Created frontend integration test for Phase 3 workspace flow
+- REST E2E now injects the deterministic generator at the test boundary; production planning still defaults to DeepSeek.
+- Restored frontend auto-import type visibility and removed strict-null/lint failures.
+- Added typed test mocks and removed explicit `any` casts from affected frontend code.
+- Connected the existing blueprint editor state to an actual save/cancel UI.
 
 ### Safety Analysis
 
@@ -143,4 +152,4 @@ docs/superpowers/plans/2026-07-10-v2-phase-3-dynamic-plot-planning-acceptance.md
 
 ## Overall Verdict
 
-**Phase 3 implementation is complete.** All 37 deterministic backend tests pass. The E2E scenario covers the full lifecycle including candidate-apply through the REST API and pending-decision publish rejection. Both DeepSeek integration tests verified successfully. Locked chapter safety is enforced at every write path. The frontend builds cleanly, and 4 new Phase 3 workspace integration tests validate the UI wiring. The only failure in lint is pre-existing and recorded with its reproducing command.
+**Phase 3 implementation and deterministic verification are complete.** All 37 deterministic backend tests pass, the REST E2E scenario covers the full lifecycle including candidate-apply and pending-decision publish rejection, and locked chapter safety is enforced at every write path. The frontend test suite, type-check, lint, and production build are green. Live DeepSeek verification remains environment-blocked until the test runner has outbound DNS/network access; no application assertion failure was observed in that run.
