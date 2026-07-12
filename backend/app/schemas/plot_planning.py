@@ -102,6 +102,8 @@ class PlanningDecisionOut(BaseModel):
     recommended_index: int
     recommendation_reason: str
     impact_scope_json: dict[str, Any]
+    selected_option_index: Optional[int] = None
+    custom_intent: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

@@ -263,7 +263,7 @@ class PlotPlanningService:
             "source": source,
             "status": "pending",
             "conflict_summary": conflict.core_conflict,
-            "evidence_json": conflict.evidence or {},
+            "evidence_json": {"items": conflict.evidence or []},
             "options_json": [
                 {"label": o.label, "action": o.action, "consequence": o.consequence}
                 for o in conflict.options
@@ -376,12 +376,13 @@ class PlotPlanningService:
             "status": "candidate",
         })
 
+        decision.selected_option_index = option_index
+        decision.custom_intent = custom_intent if option_index is None else None
         decision.status = "resolved"
         decision.updated_at = datetime.datetime.now()
         await self.db.flush()
 
         if run:
-            run.planning_blocked = False
             run.draft_content = revision_result.candidate_content
             await self.db.flush()
 

@@ -88,6 +88,8 @@ class PlanningDecision(Base):
     recommended_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     recommendation_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     impact_scope_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    selected_option_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    custom_intent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now)
     updated_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now, onupdate=datetime.datetime.now)
 

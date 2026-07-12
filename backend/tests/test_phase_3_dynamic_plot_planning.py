@@ -23,7 +23,7 @@ from app.models.plot_planning import (
 )
 from app.models.user import User
 from app.models.writing import ChapterPlan, ChapterBrief, WritingRun
-from app.schemas.plot_planning import ChooseDecisionRequest
+from app.schemas.plot_planning import ChooseDecisionRequest, PlanningDecisionOut
 from app.services.plot_planning_service import PlotPlanningService
 from app.services.writing_service import WritingService
 
@@ -644,18 +644,19 @@ async def test_choose_decision_preserves_unaffected_text_and_creates_new_plan(db
     from app.services.plot_planning_service import PlotPlanningService
     from app.repositories.plot_planning_repo import PlotPlanningRepo
 
-    foundation = await PlotPlanningService(db, 1, 1).update_foundation(
+    pp_svc = PlotPlanningService(db, 1, 1, generator=FakePhase3WritingGenerator())
+    foundation = await pp_svc.update_foundation(
         {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
         change_reason="initial",
     )
 
     repo = PlotPlanningRepo(db)
     revision = await repo.get_latest_foundation_revision(1)
-    unit = await PlotPlanningService(db, 1, 1).create_plot_unit({
+    unit = await pp_svc.create_plot_unit({
         "title": "第一卷", "scope_type": "volume", "start_position": 1, "end_position": 10,
     })
-    plan = await PlotPlanningService(db, 1, 1).generate_plan(unit.id)
-    confirmed = await PlotPlanningService(db, 1, 1).confirm_plan(unit.id, plan.id)
+    plan = await pp_svc.generate_plan(unit.id)
+    confirmed = await pp_svc.confirm_plan(unit.id, plan.id)
     assert confirmed.status == "active"
 
     # Create a writing run with target_chapter_id so it can be referenced
@@ -711,7 +712,61 @@ async def test_choose_decision_preserves_unaffected_text_and_creates_new_plan(db
     assert revision.status == "candidate"
     assert revision.candidate_content.startswith("开头不变。")
     assert revision.candidate_content.endswith("结尾不变。")
-    assert run.planning_blocked is False
+    assert run.planning_blocked is True
+    assert decision.selected_option_index == 0
+    assert decision.custom_intent is None
+
+
+@pytest.mark.asyncio
+async def test_conflict_evidence_is_schema_safe_and_choice_is_persisted(db):
+    user = User(id=1, username="tester", hashed_password="x")
+    db.add(user)
+    novel = Novel(id=1, user_id=1, title="测试小说")
+    db.add(novel)
+    await db.flush()
+
+    from app.services.plot_planning_service import PlotPlanningService
+    from app.repositories.plot_planning_repo import PlotPlanningRepo
+
+    pp_svc = PlotPlanningService(db, 1, 1, generator=FakePhase3WritingGenerator())
+    foundation = await pp_svc.update_foundation(
+        {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
+        change_reason="initial",
+    )
+
+    repo = PlotPlanningRepo(db)
+    unit = await pp_svc.create_plot_unit({
+        "title": "第一卷", "scope_type": "volume", "start_position": 1, "end_position": 10,
+    })
+    plan = await pp_svc.generate_plan(unit.id)
+    confirmed = await pp_svc.confirm_plan(unit.id, plan.id)
+
+    from app.models.writing import ChapterPlan, ChapterBrief, WritingRun
+    cp = ChapterPlan(id=1, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
+    db.add(cp)
+    await db.flush()
+    brief = ChapterBrief(id=1, novel_id=1, chapter_plan_id=1, brief_json={"writing_goal": "测试"}, length_contract_json={}, status="ready")
+    db.add(brief)
+    await db.flush()
+    run = WritingRun(
+        id=1, novel_id=1, chapter_brief_id=1, context_package_id=1,
+        status="completed", draft_content="草稿内容",
+        planning_blocked=True,
+        context_snapshot_json={"plot_plan_revision_id": confirmed.id},
+    )
+    db.add(run)
+    await db.flush()
+
+    conflict = conflict_output().model_copy(update={"evidence": [{"chapter_id": 1, "fact": "锁定事实"}]})
+    service = PlotPlanningService(db=db, user_id=1, novel_id=1, generator=FakePhase3WritingGenerator())
+    decision = await service.create_decision_from_conflict(conflict, "during_generation", run_id=1)
+    assert decision.evidence_json == {"items": [{"chapter_id": 1, "fact": "锁定事实"}]}
+
+    await service.choose_decision(decision.id, custom_intent="保留事实并补充因果")
+    refreshed = await service.get_decision(decision.id)
+    assert refreshed.selected_option_index is None
+    assert refreshed.custom_intent == "保留事实并补充因果"
+    PlanningDecisionOut.model_validate(refreshed)
 
 
 @pytest.mark.asyncio
@@ -725,16 +780,17 @@ async def test_choose_decision_rolls_back_on_generator_failure(db):
     from app.services.plot_planning_service import PlotPlanningService
     from app.repositories.plot_planning_repo import PlotPlanningRepo
 
-    await PlotPlanningService(db, 1, 1).update_foundation(
+    pp_svc = PlotPlanningService(db, 1, 1, generator=FakePhase3WritingGenerator())
+    await pp_svc.update_foundation(
         {"outline": "大纲", "current_intent": "意图", "stage_goal": "目标", "constraints_json": {}},
         change_reason="initial",
     )
     repo = PlotPlanningRepo(db)
-    unit = await PlotPlanningService(db, 1, 1).create_plot_unit({
+    unit = await pp_svc.create_plot_unit({
         "title": "第一卷", "scope_type": "volume", "start_position": 1, "end_position": 10,
     })
-    plan = await PlotPlanningService(db, 1, 1).generate_plan(unit.id)
-    confirmed = await PlotPlanningService(db, 1, 1).confirm_plan(unit.id, plan.id)
+    plan = await pp_svc.generate_plan(unit.id)
+    confirmed = await pp_svc.confirm_plan(unit.id, plan.id)
 
     from app.models.writing import ChapterPlan, ChapterBrief, WritingRun
     cp = ChapterPlan(id=20, novel_id=1, position=1, content_json={"chapter_title": "第一章"}, status="ready")
@@ -1106,6 +1162,7 @@ async def test_phase3_e2e_full_scenario(client, novel_and_headers, db):
     # 11. Accept run (update status since choose_decision resolves but doesn't set completed)
     await db.refresh(conflicting_run)
     conflicting_run.status = "completed"
+    conflicting_run.planning_blocked = False
     await db.flush()
     chapter_obj, extraction = await conflicting_ws.accept_writing_run(conflicting_run.id)
     assert chapter_obj.status == "draft"
