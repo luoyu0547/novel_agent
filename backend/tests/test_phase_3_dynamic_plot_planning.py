@@ -1381,6 +1381,20 @@ async def test_phase3_e2e_full_scenario(client, novel_and_headers, db):
     assert len(decision.options_json) in (2, 3)
     assert decision.recommended_index is not None
 
+    # 9.5 Publish a draft chapter while pending decision exists → 400
+    draft_ch_resp = await client.post(
+        f"/api/v1/novels/{novel_id}/chapters",
+        headers=headers,
+        json={"title": "阻塞待发", "content": "草稿", "status": "draft"},
+    )
+    assert draft_ch_resp.status_code == 200
+    assert draft_ch_resp.json()["data"]["status"] == "draft"
+    fail_pub = await client.put(
+        f"/api/v1/novels/{novel_id}/chapters/{draft_ch_resp.json()['data']['id']}/publish",
+        headers=headers, json={},
+    )
+    assert fail_pub.status_code == 400
+
     # 10. Choose decision
     original_unaffected = "不越过冲突点的部分正文"
     revision_generator = FakePhase3WritingGenerator(
@@ -1400,11 +1414,18 @@ async def test_phase3_e2e_full_scenario(client, novel_and_headers, db):
     assert draft_revision.status == "candidate"
     assert original_unaffected in draft_revision.candidate_content
     assert new_plan.version == active_plan["version"] + 1
+    assert resolved_run.draft_content == original_unaffected
 
-    # 11. Apply draft revision and accept run
+    # 11. Apply draft revision via API
+    apply_resp = await client.put(
+        f"/api/v1/novels/{novel_id}/draft-revisions/{draft_revision.id}/apply",
+        headers=headers,
+    )
+    assert apply_resp.status_code == 200
+    assert apply_resp.json()["data"]["status"] == "applied"
     await db.refresh(conflicting_run)
-    applied = await pp_svc_rev.apply_draft_revision(draft_revision.id)
-    assert applied.status == "applied"
+    assert conflicting_run.planning_blocked is False
+    assert conflicting_run.status == "completed"
     chapter_obj, extraction = await conflicting_ws.accept_writing_run(conflicting_run.id)
     assert chapter_obj.status == "draft"
 
@@ -1490,4 +1511,24 @@ async def test_cross_user_planning_returns_404(client):
     assert resp.status_code == 404
 
     resp = await client.get(f"/api/v1/novels/{novel_a['id']}/plot-units", headers=headers_b)
+    assert resp.status_code == 404
+
+    resp = await client.put(
+        f"/api/v1/novels/{novel_a['id']}/planning-decisions/999/choose",
+        headers=headers_b,
+        json={"option_index": 0},
+    )
+    assert resp.status_code == 404
+
+    resp = await client.put(
+        f"/api/v1/novels/{novel_a['id']}/draft-revisions/999/apply",
+        headers=headers_b,
+    )
+    assert resp.status_code == 404
+
+    resp = await client.post(
+        f"/api/v1/novels/{novel_a['id']}/plot-units/999/plans/generate",
+        headers=headers_b,
+        json={"author_input": ""},
+    )
     assert resp.status_code == 404
