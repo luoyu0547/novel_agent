@@ -1,3 +1,4 @@
+from app.models.draft_version import DraftVersion
 from app.models.foreshadowing import Foreshadowing
 from app.models.memory import CharacterProfile, WorldSetting
 from app.models.novel import Chapter, Novel
@@ -24,4 +25,5 @@ __all__ = [
     "ReviewIssue",
     "AuthorFoundation", "AuthorFoundationRevision", "PlotUnit",
     "PlotPlanRevision", "PlanningDecision", "DraftRevision",
+    "DraftVersion",
 ]

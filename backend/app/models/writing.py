@@ -102,6 +102,7 @@ class PendingRepair(Base):
     novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id"), nullable=False, index=True)
     chapter_id: Mapped[Optional[int]] = mapped_column(ForeignKey("chapters.id"), nullable=True)
     writing_run_id: Mapped[int] = mapped_column(ForeignKey("writing_runs.id"), nullable=False, index=True)
+    review_issue_id: Mapped[Optional[int]] = mapped_column(ForeignKey("review_issues.id"), nullable=True)
     issue_type: Mapped[str] = mapped_column(nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     location: Mapped[str] = mapped_column(Text, nullable=False, default="")

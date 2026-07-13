@@ -100,13 +100,35 @@ class DraftRevision(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     novel_id: Mapped[int] = mapped_column(ForeignKey("novels.id"), nullable=False, index=True)
     writing_run_id: Mapped[Optional[int]] = mapped_column(ForeignKey("writing_runs.id"), nullable=True)
-    parent_revision_id: Mapped[Optional[int]] = mapped_column(ForeignKey("draft_revisions.id"), nullable=True)
-    decision_id: Mapped[Optional[int]] = mapped_column(ForeignKey("planning_decisions.id"), nullable=True)
+    draft_version_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("draft_versions.id"), nullable=True
+    )
+    parent_revision_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("draft_revisions.id"), nullable=True
+    )
+    decision_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("planning_decisions.id"), nullable=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source_type: Mapped[str] = mapped_column(nullable=False, default="author_request")
+    source_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    base_revision_sequence: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    base_content_hash: Mapped[str] = mapped_column(nullable=False, default="")
     base_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     candidate_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    patches_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     scope_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     diff_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    expanded_scope: Mapped[bool] = mapped_column(default=False)
+    expanded_scope_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(nullable=False, default="candidate")
-    created_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now)
-    updated_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.now, onupdate=datetime.datetime.now)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        default=datetime.datetime.now
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        default=datetime.datetime.now,
+        onupdate=datetime.datetime.now,
+    )
