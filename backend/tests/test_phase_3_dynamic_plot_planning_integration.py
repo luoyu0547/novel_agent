@@ -9,10 +9,13 @@ import pytest
 
 from app.ai.writer import DeepSeekWritingGenerator, FakePhase3WritingGenerator
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("DEEPSEEK_API_KEY"),
-    reason="DEEPSEEK_API_KEY not configured",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not os.environ.get("DEEPSEEK_API_KEY"),
+        reason="DEEPSEEK_API_KEY not configured",
+    ),
+]
 
 
 async def _create_locked_chapter(client, novel_id, headers, content="发布事实"):

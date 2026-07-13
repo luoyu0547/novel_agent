@@ -5,10 +5,13 @@ from httpx import ASGITransport, AsyncClient
 from app.core.config import settings
 from app.main import app
 
-pytestmark = pytest.mark.skipif(
-    not settings.DEEPSEEK_API_KEY,
-    reason="DEEPSEEK_API_KEY not set — set in .env to run AI integration tests",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not settings.DEEPSEEK_API_KEY,
+        reason="DEEPSEEK_API_KEY not set — set in .env to run AI integration tests",
+    ),
+]
 
 
 @pytest.fixture

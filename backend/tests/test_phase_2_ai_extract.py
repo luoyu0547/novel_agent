@@ -7,10 +7,13 @@ from app.core.config import settings
 from app.main import app
 
 
-pytestmark = pytest.mark.skipif(
-    not settings.DEEPSEEK_API_KEY,
-    reason="DEEPSEEK_API_KEY not set — set in .env to run AI tests",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not settings.DEEPSEEK_API_KEY,
+        reason="DEEPSEEK_API_KEY not set — set in .env to run AI tests",
+    ),
+]
 
 
 @pytest.fixture
