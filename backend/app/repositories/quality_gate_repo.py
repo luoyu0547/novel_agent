@@ -36,7 +36,7 @@ class PendingRepairRepo:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def create(self, novel_id: int, chapter_id: int, writing_run_id: int, data: dict) -> PendingRepair:
+    async def create(self, novel_id: int, chapter_id: Optional[int], writing_run_id: int, data: dict) -> PendingRepair:
         repair = PendingRepair(novel_id=novel_id, chapter_id=chapter_id, writing_run_id=writing_run_id, **data)
         self.db.add(repair)
         await self.db.flush()
@@ -44,6 +44,12 @@ class PendingRepairRepo:
 
     async def get_by_id(self, repair_id: int) -> Optional[PendingRepair]:
         return await self.db.get(PendingRepair, repair_id)
+
+    async def get_by_review_issue(self, review_issue_id: int) -> Optional[PendingRepair]:
+        result = await self.db.execute(
+            select(PendingRepair).where(PendingRepair.review_issue_id == review_issue_id)
+        )
+        return result.scalar_one_or_none()
 
     async def list_by_writing_run(self, writing_run_id: int) -> list[PendingRepair]:
         result = await self.db.execute(
@@ -85,13 +91,39 @@ class ReviewIssueRepo:
         await self.db.flush()
         return issue
 
-    async def list_by_writing_run(self, writing_run_id: int) -> list[ReviewIssue]:
+    async def get(self, issue_id: int, novel_id: int) -> Optional[ReviewIssue]:
         result = await self.db.execute(
-            select(ReviewIssue)
-            .where(ReviewIssue.writing_run_id == writing_run_id)
+            select(ReviewIssue).where(
+                ReviewIssue.id == issue_id,
+                ReviewIssue.novel_id == novel_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_by_writing_run(self, writing_run_id: int, status: Optional[str] = None) -> list[ReviewIssue]:
+        stmt = select(ReviewIssue).where(ReviewIssue.writing_run_id == writing_run_id)
+        if status:
+            stmt = stmt.where(ReviewIssue.status == status)
+        stmt = stmt.order_by(ReviewIssue.created_at.asc())
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_open_blocking(self, writing_run_id: int) -> list[ReviewIssue]:
+        result = await self.db.execute(
+            select(ReviewIssue).where(
+                ReviewIssue.writing_run_id == writing_run_id,
+                ReviewIssue.status == "open",
+                ReviewIssue.acceptance_blocking == True,
+            )
             .order_by(ReviewIssue.created_at.asc())
         )
         return list(result.scalars().all())
+
+    async def update(self, issue: ReviewIssue, data: dict) -> ReviewIssue:
+        for key, value in data.items():
+            setattr(issue, key, value)
+        await self.db.flush()
+        return issue
 
     async def cleanup_by_writing_run(self, writing_run_id: int):
         issues = await self.list_by_writing_run(writing_run_id)

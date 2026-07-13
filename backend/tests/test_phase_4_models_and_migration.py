@@ -596,3 +596,101 @@ def test_migration_round_trip(tmp_path):
     ).fetchall()
     assert len(rows) == 1, f"After re-upgrade, expected 1 DV, got {len(rows)}"
     conn.close()
+
+
+# ── Schema validation tests ──────────────────────────────────────────
+
+
+def test_revision_requests_enforce_author_intent_and_concurrency():
+    """验证 CreateDraftVersionRequest / CreateRevisionRequest / ManualRevisionRequest 校验。"""
+    from pydantic import ValidationError
+
+    from app.schemas.revision import (
+        CreateDraftVersionRequest,
+        CreateRevisionRequest,
+        ManualRevisionRequest,
+    )
+
+    # 合法请求
+    req = CreateDraftVersionRequest(based_on_version_id=4, change_reason="调整节奏")
+    assert req.based_on_version_id == 4
+
+    # change_reason 为空 → 失败
+    with pytest.raises(ValidationError):
+        CreateDraftVersionRequest(based_on_version_id=4, change_reason="")
+
+    # CreateRevisionRequest 无参数 → 失败（必须提供 option_index 或 custom_intent）
+    with pytest.raises(ValidationError):
+        CreateRevisionRequest()
+
+    # CreateRevisionRequest 同时提供两者 → 失败
+    with pytest.raises(ValidationError):
+        CreateRevisionRequest(option_index=0, custom_intent="更克制")
+
+    # ManualRevisionRequest 合法
+    req2 = ManualRevisionRequest(
+        content="新正文",
+        change_reason="补充动机",
+        base_revision_sequence=2,
+    )
+    assert req2.base_revision_sequence == 2
+
+
+# ── Repository query tests ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_draft_version_repo_queries(db):
+    """DraftVersionRepo 基本查询方法：ordering, get_current, next_version_number。"""
+    from app.repositories.draft_version_repo import DraftVersionRepo
+
+    repo = DraftVersionRepo(db)
+    run = await make_writing_run(db, draft_content="测试正文", status="completed")
+
+    # 创建版本 1 (accepted)
+    await repo.create(run.novel_id, {
+        "writing_run_id": run.id,
+        "version": 1,
+        "title": "v1",
+        "content": "测试正文",
+        "word_count": 4,
+        "change_reason": "首次生成",
+        "status": "accepted",
+        "revision_sequence": 0,
+    })
+
+    # 创建版本 2 (draft — current)
+    current = await repo.create(run.novel_id, {
+        "writing_run_id": run.id,
+        "version": 2,
+        "title": "v2",
+        "content": "修订正文",
+        "word_count": 4,
+        "change_reason": "修订",
+        "status": "draft",
+        "revision_sequence": 0,
+    })
+
+    # list_by_run: version DESC
+    versions = await repo.list_by_run(run.id)
+    assert [item.version for item in versions] == [2, 1]
+
+    # get_current: status == "draft"
+    active = await repo.get_current(run.id)
+    assert active is not None
+    assert active.version == 2
+
+    # next_version_number
+    assert await repo.next_version_number(run.id) == 3
+
+    # list_revisions (无 DraftRevision 链接)
+    assert await repo.list_revisions(current.id) == []
+
+    # get with novel_id filter
+    found = await repo.get(current.id, run.novel_id)
+    assert found is not None
+    assert found.id == current.id
+
+    # get with wrong novel_id fails
+    not_found = await repo.get(current.id, 9999)
+    assert not_found is None

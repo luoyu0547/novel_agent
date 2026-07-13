@@ -3,11 +3,13 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, field_validator, model_validator
 
+# Phase 4: DraftRevisionOut moved to app.schemas.revision — re-export for backward compat
+from app.schemas.revision import DraftRevisionOut, DraftRevisionStatus  # noqa: F401
+
 PlotUnitStatus = Literal["draft", "active", "completed", "archived"]
 PlotPlanRevisionStatus = Literal["draft", "active", "stale", "blocked", "superseded", "completed"]
 PlanningDecisionStatus = Literal["pending", "resolved", "superseded"]
 PlanningDecisionSource = Literal["during_generation", "during_review"]
-DraftRevisionStatus = Literal["candidate", "applied", "superseded"]
 
 
 class AuthorFoundationOut(BaseModel):
@@ -127,20 +129,3 @@ class ChooseDecisionRequest(BaseModel):
             raise ValueError("不能同时提供 option_index 和 custom_intent")
         return self
 
-
-class DraftRevisionOut(BaseModel):
-    id: int
-    novel_id: int
-    writing_run_id: Optional[int] = None
-    parent_revision_id: Optional[int] = None
-    decision_id: Optional[int] = None
-    base_content: str
-    candidate_content: str
-    scope_json: dict[str, Any]
-    diff_json: dict[str, Any]
-    reason: str
-    status: str
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = {"from_attributes": True}

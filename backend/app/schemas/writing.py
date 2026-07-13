@@ -131,6 +131,7 @@ class PendingRepairOut(BaseModel):
     novel_id: int
     chapter_id: Optional[int] = None
     writing_run_id: int
+    review_issue_id: Optional[int] = None
     issue_type: str
     description: str
     location: str
