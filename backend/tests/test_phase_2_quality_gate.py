@@ -594,10 +594,11 @@ async def test_writing_run_all_pass_no_rewrite(db):
 
 
 async def _seed_repair_setup(db):
-    """Create user, novel, and WritingRun for RepairService tests."""
+    """Create user, novel, WritingRun, and DraftVersion for RepairService tests."""
     from app.models.user import User
     from app.models.novel import Novel
     from app.models.writing import WritingRun
+    from app.models.draft_version import DraftVersion
 
     user = User(username="repair_tester", hashed_password="x")
     db.add(user)
@@ -616,61 +617,130 @@ async def _seed_repair_setup(db):
     )
     db.add(run)
     await db.flush()
+    # Create v1 DraftVersion so ModificationService can find a current mutable version
+    version = DraftVersion(
+        novel_id=novel.id,
+        writing_run_id=run.id,
+        version=1,
+        title="首次生成",
+        content=run.draft_content,
+        word_count=run.word_count,
+        change_reason="首次生成",
+        status="draft",
+        revision_sequence=0,
+    )
+    db.add(version)
+    await db.flush()
     return user.id, novel.id, run.id
 
 
 @pytest.mark.asyncio
-async def test_repair_service_apply_choice_rewrites_draft(db):
-    """apply with choice calls rewrite_fragment, updates WritingRun.draft_content, creates RepairLog."""
+async def test_repair_service_apply_creates_candidate_revision(db):
+    """apply calls ModificationService.create_revision() and returns candidate; does NOT alter WritingRun."""
     from app.services.repair_service import RepairService
-    from app.ai.writer import FakeWritingGenerator
-    from app.repositories.quality_gate_repo import PendingRepairRepo, RepairLogRepo
+    from app.ai.modification import FakeModificationAgent, ModificationOutput, RevisionPatch
+    from app.repositories.quality_gate_repo import PendingRepairRepo, ReviewIssueRepo
     from app.models.writing import WritingRun
+    from app.models.quality_gate import ReviewIssue
 
     user_id, novel_id, run_id = await _seed_repair_setup(db)
 
+    # Create a ReviewIssue linked to the run, with repair_options_json pre-populated
+    issue_repo = ReviewIssueRepo(db)
+    issue = await issue_repo.create(
+        novel_id,
+        run_id,
+        {
+            "issue_type": "character",
+            "severity": "needs_intent",
+            "resolution_mode": "needs_intent",
+            "location": "特定段落",
+            "description": "角色抉择",
+            "suggestion": "修复此处",
+            "acceptance_blocking": True,
+            "repair_options_json": [
+                {"label": "方案A", "summary": "保持谨慎", "action": "保持谨慎人设", "expected_effect": "角色更一致", "estimated_scope": {"type": "paragraph"}},
+                {"label": "方案B", "summary": "表现果断", "action": "表现果断", "expected_effect": "角色更主动", "estimated_scope": {"type": "paragraph"}},
+            ],
+            "status": "open",
+        },
+    )
+
     pending_repo = PendingRepairRepo(db)
-    location = "特定段落"
     repair = await pending_repo.create(novel_id, None, run_id, {
         "issue_type": "character_choice",
         "description": "角色抉择",
-        "location": location,
+        "location": "特定段落",
         "context": "角色面临选择",
         "options": [{"label": "方案A", "summary": "保持谨慎"}, {"label": "方案B", "summary": "表现果断"}],
         "intent_type": "choice",
+        "review_issue_id": issue.id,
     })
     await db.commit()
 
-    gen = FakeWritingGenerator()
-    svc = RepairService(db=db, user_id=user_id, novel_id=novel_id, generator=gen)
+    # Build a FakeModificationAgent that returns a valid modification
+    run = await db.get(WritingRun, run_id)
+    content = run.draft_content
+    new_content = content.replace("特定段落", "[特定段落]")
+    patch = RevisionPatch(
+        start_offset=content.find("特定段落"),
+        end_offset=content.find("特定段落") + len("特定段落"),
+        original_text="特定段落",
+        replacement_text="[特定段落]",
+        reason="角色抉择修复",
+    )
+    mod_output = ModificationOutput(
+        candidate_content=new_content,
+        patches=[patch],
+        diff={"old": content, "new": new_content},
+        change_reason="角色抉择修复",
+        scope={"type": "paragraph"},
+    )
+    agent = FakeModificationAgent(modification_output=mod_output)
+    svc = RepairService(db=db, user_id=user_id, novel_id=novel_id, modification_agent=agent)
     result = await svc.resolve(novel_id, repair.id, "apply", choice_index=0)
 
-    assert result.status == "applied"
+    # Result includes pending_repair and draft_revision
+    assert result["pending_repair"].status == "pending"  # NOT applied yet
+    assert result["draft_revision"] is not None
+    assert result["draft_revision"].status == "candidate"
 
-    run = await db.get(WritingRun, run_id)
-    assert f"[{location}]" in run.draft_content
+    # WritingRun content is NOT changed
+    run_after = await db.get(WritingRun, run_id)
+    assert run_after.draft_content == content  # unchanged
 
-    log_repo = RepairLogRepo(db)
-    logs = await log_repo.list_by_writing_run(run_id)
-    assert len(logs) == 1
-    assert logs[0].issue_type == "character_choice"
-    assert logs[0].location == location
-    assert logs[0].old_text == location
-    assert logs[0].new_text == f"[{location}]"
-
-    assert run.has_pending_repairs is False
+    # PendingRepair is still pending (not applied yet)
+    await db.refresh(repair)
+    assert repair.status == "pending"
     await db.rollback()
 
 
 @pytest.mark.asyncio
-async def test_repair_service_dismiss_leaves_draft_unchanged(db):
-    """dismiss leaves draft unchanged, marks repair dismissed."""
+async def test_repair_service_dismiss_ignores_issue(db):
+    """dismiss calls ModificationService.ignore_issue() and marks repair dismissed."""
     from app.services.repair_service import RepairService
-    from app.ai.writer import FakeWritingGenerator
-    from app.repositories.quality_gate_repo import PendingRepairRepo, RepairLogRepo
+    from app.ai.modification import FakeModificationAgent
+    from app.repositories.quality_gate_repo import PendingRepairRepo, ReviewIssueRepo
     from app.models.writing import WritingRun
 
     user_id, novel_id, run_id = await _seed_repair_setup(db)
+
+    # Create a ReviewIssue linked to the run
+    issue_repo = ReviewIssueRepo(db)
+    issue = await issue_repo.create(
+        novel_id,
+        run_id,
+        {
+            "issue_type": "character",
+            "severity": "needs_intent",
+            "resolution_mode": "needs_intent",
+            "location": "某段落",
+            "description": "角色抉择",
+            "suggestion": "修复此处",
+            "acceptance_blocking": True,
+            "status": "open",
+        },
+    )
 
     pending_repo = PendingRepairRepo(db)
     repair = await pending_repo.create(novel_id, None, run_id, {
@@ -679,24 +749,26 @@ async def test_repair_service_dismiss_leaves_draft_unchanged(db):
         "location": "某段落",
         "context": "角色面临选择",
         "intent_type": "choice",
+        "review_issue_id": issue.id,
     })
     await db.commit()
 
     run_before = await db.get(WritingRun, run_id)
     original_draft = run_before.draft_content
 
-    gen = FakeWritingGenerator()
-    svc = RepairService(db=db, user_id=user_id, novel_id=novel_id, generator=gen)
-    result = await svc.resolve(novel_id, repair.id, "dismiss")
+    agent = FakeModificationAgent()
+    svc = RepairService(db=db, user_id=user_id, novel_id=novel_id, modification_agent=agent)
+    result = await svc.resolve(novel_id, repair.id, "dismiss", intent_text="无需修复")
 
-    assert result.status == "dismissed"
+    assert result["pending_repair"].status == "dismissed"
+    assert result["draft_revision"] is None
 
     run_after = await db.get(WritingRun, run_id)
     assert run_after.draft_content == original_draft
 
-    log_repo = RepairLogRepo(db)
-    logs = await log_repo.list_by_writing_run(run_id)
-    assert len(logs) == 0
+    # ReviewIssue should be ignored
+    await db.refresh(issue)
+    assert issue.status == "ignored"
     await db.rollback()
 
 

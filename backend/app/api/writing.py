@@ -287,14 +287,20 @@ async def resolve_repair(
     db: AsyncSession = Depends(get_db),
 ):
     svc = RepairService(db=db, user_id=current_user.id, novel_id=novel_id)
-    await svc.resolve(
+    result = await svc.resolve(
         novel_id=novel_id,
         repair_id=repair_id,
         action=body.action,
         choice_index=body.choice_index,
         intent_text=body.intent_text,
     )
-    return ApiResponse.success(message="修复项已处理")
+    data = {"pending_repair": PendingRepairOut.model_validate(result["pending_repair"]).model_dump()}
+    if result.get("draft_revision"):
+        from app.schemas.plot_planning import DraftRevisionOut
+        data["draft_revision"] = DraftRevisionOut.model_validate(result["draft_revision"]).model_dump()
+    else:
+        data["draft_revision"] = None
+    return ApiResponse.success(data=data)
 
 
 @router.post("/writing-runs/{run_id}/review")

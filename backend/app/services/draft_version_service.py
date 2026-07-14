@@ -17,8 +17,11 @@ from app.core.exceptions import BadRequest, NotFound
 from app.models.draft_version import DraftVersion
 from app.models.novel import Chapter, Novel
 from app.models.plot_planning import DraftRevision
-from app.models.writing import WritingRun
+from app.models.quality_gate import ReviewIssue
+from app.models.writing import PendingRepair, WritingRun
 from app.repositories.draft_version_repo import DraftVersionRepo
+from app.repositories.quality_gate_repo import PendingRepairRepo, ReviewIssueRepo
+from app.services.modification_service import apply_patches
 
 logger = logging.getLogger("novel_agent.draft_version")
 
@@ -376,6 +379,146 @@ class DraftVersionService:
         version.revision_sequence = new_revision_sequence
         version.updated_at = datetime.datetime.now()
         self._sync_run(run, version)
+
+        await self.db.commit()
+        await self.db.refresh(version)
+        await self.db.refresh(revision)
+        return version, revision
+
+    async def apply_revision(
+        self,
+        revision_id: int,
+        confirm_expanded_scope: bool = False,
+    ) -> tuple[DraftVersion, DraftRevision]:
+        """原子化应用候选修订。
+
+        在 begin_nested() 事务中完成所有状态变更，保证要么全部成功，
+        要么全部回滚。步骤：
+        1. 加载归属的候选修订及其 DraftVersion/WritingRun
+        2. 验证可变状态和未锁定章节
+        3. 验证序列和哈希匹配当前版本
+        4. 从存储的补丁重建候选内容并比对
+        5. 扩大范围时要求确认
+        6. 递增 revision_sequence
+        7. 更新 DraftVersion 内容/字数
+        8. 同步 WritingRun 内容/字数
+        9. 标记选中候选为 applied
+        10. 标记同基础兄弟候选为 superseded
+        11. 解析关联 ReviewIssue
+        12. 标记关联 PendingRepair 为 applied
+        13. 清除 Phase 3 规划阻塞
+        """
+        revision = await self.repo.get_revision(revision_id, self.novel_id)
+        if not revision:
+            raise NotFound("修订不存在")
+        if revision.status != "candidate":
+            raise BadRequest("只能应用候选状态的修订")
+
+        # Load DraftVersion
+        version = await self.repo.get(revision.draft_version_id, self.novel_id)
+        if not version:
+            raise NotFound("关联的草稿版本不存在")
+        if version.status != "draft":
+            raise BadRequest("只能应用到 draft 状态的版本")
+
+        # Load WritingRun
+        run = await self._get_owned_run(version.writing_run_id)
+
+        # Verify run is not accepted/discarded
+        if run.status in ("accepted", "discarded"):
+            raise BadRequest("写作运行已接受或丢弃，不可应用修订")
+
+        # Verify chapter is not locked
+        await self._ensure_target_unlocked(run)
+
+        # Verify sequence matches current version
+        if revision.base_revision_sequence != version.revision_sequence:
+            raise BadRequest("基础修订序列已过期，请刷新后重试")
+
+        # Verify hash matches current version content
+        if revision.base_content_hash != self._hash_content(version.content):
+            raise BadRequest("基础内容哈希已过期，请刷新后重试")
+
+        # Reconstruct candidate from stored patches and compare
+        if revision.patches_json:
+            from app.ai.modification import RevisionPatch
+            patches = [RevisionPatch(**p) for p in revision.patches_json]
+            try:
+                reconstructed = apply_patches(version.content, patches)
+            except BadRequest:
+                raise BadRequest("补丁验证失败：重叠或范围无效")
+            if reconstructed != revision.candidate_content:
+                raise BadRequest("候选内容与补丁重建结果不一致")
+
+        # Require expansion confirmation when needed
+        if revision.expanded_scope and not confirm_expanded_scope:
+            raise BadRequest("修改范围超出上下文窗口，需确认扩大范围")
+
+        new_revision_sequence = version.revision_sequence + 1
+
+        try:
+            async with self.db.begin_nested():
+                # Set revision sequence and DraftVersion revision_sequence
+                revision.sequence = new_revision_sequence
+                version.revision_sequence = new_revision_sequence
+
+                # Update DraftVersion content/word_count
+                version.content = revision.candidate_content
+                version.word_count = self._count_words(revision.candidate_content)
+                version.updated_at = datetime.datetime.now()
+
+                # Synchronize WritingRun content/word_count
+                self._sync_run(run, version)
+
+                # Mark selected candidate applied
+                revision.status = "applied"
+                revision.updated_at = datetime.datetime.now()
+
+                # Mark exact-base sibling candidates superseded
+                siblings = await self.repo.list_sibling_candidates(
+                    revision.draft_version_id,
+                    revision.base_revision_sequence,
+                    revision.base_content_hash,
+                )
+                for sib in siblings:
+                    if sib.id != revision.id:
+                        sib.status = "superseded"
+                        sib.updated_at = datetime.datetime.now()
+
+                # Resolve linked ReviewIssue
+                if revision.source_type == "review_issue" and revision.source_id:
+                    issue_repo = ReviewIssueRepo(self.db)
+                    issue = await issue_repo.get(revision.source_id, self.novel_id)
+                    if issue and issue.status == "open":
+                        issue.status = "resolved"
+                        issue.resolved_by_revision_id = revision.id
+                        issue.updated_at = datetime.datetime.now()
+
+                        # If linked PendingRepair exists, mark it applied
+                        repair_repo = PendingRepairRepo(self.db)
+                        repair = await repair_repo.get_by_review_issue(issue.id)
+                        if repair and repair.status == "pending":
+                            repair.status = "applied"
+                            # Recompute has_pending_repairs
+                            remaining = await repair_repo.list_pending_by_writing_run(
+                                run.id
+                            )
+                            run.has_pending_repairs = len(remaining) > 0
+
+                # Clear Phase 3 planning block for planning_decision source
+                if revision.source_type == "planning_decision":
+                    run.planning_blocked = False
+                    if run.status == "decision_required":
+                        run.status = "completed"
+                    if run.decision_id:
+                        run.decision_id = None
+
+        except IntegrityError:
+            await self.db.rollback()
+            raise BadRequest("并发冲突，请刷新后重试")
+        except (BadRequest, NotFound):
+            # Business validation failures: roll back nested, re-raise
+            raise
 
         await self.db.commit()
         await self.db.refresh(version)

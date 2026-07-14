@@ -399,43 +399,10 @@ class PlotPlanningService:
         return decision, new_plan, draft_revision, run
 
     async def apply_draft_revision(self, revision_id: int) -> DraftRevision:
-        await self._ensure_owned_novel()
-        revision = await self.repo.get_draft_revision(revision_id, self.novel_id)
-        if not revision:
-            raise NotFound("修订不存在")
-        if revision.status != "candidate":
-            raise BadRequest("只能应用候选状态的修订")
-
-        from app.repositories.writing_repo import WritingRunRepo
-        run_repo = WritingRunRepo(self.db)
-        run = await run_repo.get_by_id(revision.writing_run_id)
-        if not run or run.novel_id != self.novel_id:
-            raise NotFound("关联的写作运行不存在")
-        if not run.draft_content:
-            raise BadRequest("关联的写作运行没有草稿内容")
-
-        if run.target_chapter_id:
-            from app.models.novel import Chapter
-            chapter = await self.db.get(Chapter, run.target_chapter_id)
-            if chapter and chapter.status == "locked":
-                raise BadRequest("目标章节已发布，不可覆盖")
-
-        siblings = await self.repo.list_draft_revisions_by_run(revision.writing_run_id)
-        for sib in siblings:
-            if sib.id != revision.id and sib.status == "candidate":
-                sib.status = "superseded"
-                sib.updated_at = datetime.datetime.now()
-
-        revision.status = "applied"
-        revision.updated_at = datetime.datetime.now()
-
-        run.draft_content = revision.candidate_content
-        run.planning_blocked = False
-        if run.status == "decision_required":
-            run.status = "completed"
-
-        await self.db.commit()
-        await self.db.refresh(revision)
+        """应用候选修订——委托给 DraftVersionService.apply_revision()。"""
+        from app.services.draft_version_service import DraftVersionService
+        dv_svc = DraftVersionService(self.db, self.user_id, self.novel_id)
+        _version, revision = await dv_svc.apply_revision(revision_id)
         return revision
 
     @staticmethod

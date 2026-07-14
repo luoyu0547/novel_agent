@@ -891,3 +891,328 @@ async def test_apply_patches_mismatched_text_rejected():
     ]
     with pytest.raises(BadRequest, match="不匹配"):
         apply_patches(base, patches)
+
+
+# ── Atomic state-transition matrix tests ────────────────────────────────
+
+
+async def _setup_apply_test(
+    db,
+    draft_content: str = "这是一段测试正文，用于验证修改服务的功能。",
+    run_status: str = "completed",
+    planning_blocked: bool = False,
+    decision_id: int | None = None,
+) -> tuple[WritingRun, User, Novel, DraftVersion, ReviewIssue, DraftRevision]:
+    """创建完整的 FK 链并返回 (run, user, novel, version, issue, candidate_revision)。"""
+    run, user, novel, version, issue = await _setup_run_with_issue(
+        db, draft_content=draft_content
+    )
+
+    # Update run status if needed
+    if run_status != "completed":
+        run.status = run_status
+    if planning_blocked:
+        run.planning_blocked = True
+    if decision_id is not None:
+        run.decision_id = decision_id
+    await db.flush()
+
+    # Create a candidate DraftRevision linked to the issue
+    content = version.content
+    new_content = content[:6] + "修改后" + content[6:]
+
+    from app.services.draft_version_service import DraftVersionService
+
+    patches = DraftVersionService._single_patch(content, new_content, "测试修改")
+
+    from app.repositories.draft_version_repo import DraftVersionRepo
+
+    dv_repo = DraftVersionRepo(db)
+    candidate = await dv_repo.create_revision(
+        novel.id,
+        {
+            "writing_run_id": run.id,
+            "draft_version_id": version.id,
+            "sequence": 0,
+            "source_type": "review_issue",
+            "source_id": issue.id,
+            "base_revision_sequence": version.revision_sequence,
+            "base_content_hash": DraftVersionService._hash_content(content),
+            "base_content": content,
+            "candidate_content": new_content,
+            "patches_json": patches,
+            "scope_json": {"type": "paragraph"},
+            "diff_json": {"old": content, "new": new_content},
+            "reason": "测试候选修订",
+            "status": "candidate",
+        },
+    )
+    await db.commit()
+
+    return run, user, novel, version, issue, candidate
+
+
+@pytest.mark.asyncio
+async def test_apply_updates_draft_version_and_writing_run(db):
+    """apply 更新 DraftVersion 和 WritingRun，仅递增 revision_sequence。"""
+    run, user, novel, version, issue, candidate = await _setup_apply_test(db)
+
+    svc = DraftVersionService(db, user.id, novel.id)
+    before_version = version.version  # should stay unchanged
+    before_seq = version.revision_sequence
+
+    updated_version, applied_revision = await svc.apply_revision(candidate.id)
+
+    assert applied_revision.status == "applied"
+    assert updated_version.revision_sequence == before_seq + 1
+    assert updated_version.version == before_version  # version number unchanged
+    assert updated_version.content == candidate.candidate_content
+
+    await db.refresh(run)
+    assert run.draft_content == candidate.candidate_content
+    assert run.word_count == updated_version.word_count
+
+
+@pytest.mark.asyncio
+async def test_reject_leaves_content_unchanged_keeps_issue_open(db):
+    """reject 不改变 DraftVersion 内容和 WritingRun 内容，保持 ReviewIssue open。"""
+    run, user, novel, version, issue, candidate = await _setup_apply_test(db)
+
+    before_content = version.content
+    before_run_content = run.draft_content
+
+    svc = DraftVersionService(db, user.id, novel.id)
+    rejected = await svc.reject_revision(candidate.id)
+
+    assert rejected.status == "rejected"
+
+    await db.refresh(version)
+    await db.refresh(run)
+    await db.refresh(issue)
+
+    assert version.content == before_content
+    assert run.draft_content == before_run_content
+    assert issue.status == "open"
+
+
+@pytest.mark.asyncio
+async def test_apply_marks_source_review_issue_resolved(db):
+    """apply 标记源 ReviewIssue 为 resolved 并设置 resolved_by_revision_id。"""
+    run, user, novel, version, issue, candidate = await _setup_apply_test(db)
+
+    svc = DraftVersionService(db, user.id, novel.id)
+    await svc.apply_revision(candidate.id)
+
+    await db.refresh(issue)
+    assert issue.status == "resolved"
+    assert issue.resolved_by_revision_id == candidate.id
+
+
+@pytest.mark.asyncio
+async def test_apply_supersedes_sibling_candidates_from_same_base(db):
+    """apply 标记同基础的兄弟候选为 superseded。"""
+    run, user, novel, version, issue, candidate = await _setup_apply_test(db)
+
+    # Create a sibling candidate with same base
+    from app.repositories.draft_version_repo import DraftVersionRepo
+    from app.services.draft_version_service import DraftVersionService
+
+    dv_repo = DraftVersionRepo(db)
+    content = version.content
+    sibling = await dv_repo.create_revision(
+        novel.id,
+        {
+            "writing_run_id": run.id,
+            "draft_version_id": version.id,
+            "sequence": 0,
+            "source_type": "review_issue",
+            "source_id": None,
+            "base_revision_sequence": version.revision_sequence,
+            "base_content_hash": DraftVersionService._hash_content(content),
+            "base_content": content,
+            "candidate_content": content + "兄弟候选",
+            "patches_json": [],
+            "scope_json": {"type": "paragraph"},
+            "diff_json": {},
+            "reason": "兄弟候选",
+            "status": "candidate",
+        },
+    )
+    await db.commit()
+
+    svc = DraftVersionService(db, user.id, novel.id)
+    await svc.apply_revision(candidate.id)
+
+    await db.refresh(sibling)
+    assert sibling.status == "superseded"
+
+
+@pytest.mark.asyncio
+async def test_stale_sequence_preserves_prior_state(db):
+    """过期的 base_revision_sequence 保留先前状态。"""
+    run, user, novel, version, issue, candidate = await _setup_apply_test(db)
+
+    # Advance the version's revision_sequence to make candidate stale
+    version.revision_sequence = 99
+    await db.flush()
+
+    svc = DraftVersionService(db, user.id, novel.id)
+    before_content = version.content
+    with pytest.raises(BadRequest, match="序列已过期"):
+        await svc.apply_revision(candidate.id)
+
+    await db.refresh(version)
+    assert version.content == before_content
+
+
+@pytest.mark.asyncio
+async def test_stale_hash_preserves_prior_state(db):
+    """过期的 base_content_hash 保留先前状态。"""
+    run, user, novel, version, issue, candidate = await _setup_apply_test(db)
+
+    # Change version content to make hash stale
+    version.content = "完全不同的内容"
+    await db.flush()
+
+    svc = DraftVersionService(db, user.id, novel.id)
+    with pytest.raises(BadRequest, match="哈希已过期"):
+        await svc.apply_revision(candidate.id)
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_expanded_scope_preserves_prior_state(db):
+    """未确认的 expanded_scope 保留先前状态。"""
+    run, user, novel, version, issue, candidate = await _setup_apply_test(db)
+
+    # Mark candidate as expanded_scope
+    candidate.expanded_scope = True
+    candidate.expanded_scope_reason = "修改范围超出上下文窗口"
+    await db.flush()
+
+    svc = DraftVersionService(db, user.id, novel.id)
+    before_content = version.content
+    with pytest.raises(BadRequest, match="确认扩大范围"):
+        await svc.apply_revision(candidate.id)
+
+    await db.refresh(version)
+    assert version.content == before_content
+
+    # With confirmation, it should succeed
+    await svc.apply_revision(candidate.id, confirm_expanded_scope=True)
+    await db.refresh(version)
+    assert version.content == candidate.candidate_content
+
+
+@pytest.mark.asyncio
+async def test_non_draft_version_preserves_prior_state(db):
+    """非 draft 状态的 DraftVersion 保留先前状态。"""
+    run, user, novel, version, issue, candidate = await _setup_apply_test(db)
+
+    # Archive the version
+    version.status = "archived"
+    await db.flush()
+
+    svc = DraftVersionService(db, user.id, novel.id)
+    with pytest.raises(BadRequest, match="draft 状态"):
+        await svc.apply_revision(candidate.id)
+
+
+@pytest.mark.asyncio
+async def test_accepted_run_preserves_prior_state(db):
+    """已接受的 WritingRun 保留先前状态。"""
+    run, user, novel, version, issue, candidate = await _setup_apply_test(
+        db, run_status="accepted"
+    )
+
+    svc = DraftVersionService(db, user.id, novel.id)
+    with pytest.raises(BadRequest, match="已接受或丢弃"):
+        await svc.apply_revision(candidate.id)
+
+
+@pytest.mark.asyncio
+async def test_discarded_run_preserves_prior_state(db):
+    """已丢弃的 WritingRun 保留先前状态。"""
+    run, user, novel, version, issue, candidate = await _setup_apply_test(
+        db, run_status="discarded"
+    )
+
+    svc = DraftVersionService(db, user.id, novel.id)
+    with pytest.raises(BadRequest, match="已接受或丢弃"):
+        await svc.apply_revision(candidate.id)
+
+
+@pytest.mark.asyncio
+async def test_locked_chapter_preserves_prior_state(db):
+    """锁定章节保留先前状态。"""
+    run, user, novel, version, issue, candidate = await _setup_apply_test(db)
+
+    # Create a locked chapter and set it as target
+    from app.models.novel import Chapter
+
+    chapter = Chapter(
+        novel_id=novel.id, title="已发布", content="事实", status="locked"
+    )
+    db.add(chapter)
+    await db.flush()
+    run.target_chapter_id = chapter.id
+    await db.flush()
+
+    svc = DraftVersionService(db, user.id, novel.id)
+    with pytest.raises(BadRequest, match="已发布"):
+        await svc.apply_revision(candidate.id)
+
+
+@pytest.mark.asyncio
+async def test_planning_candidate_clears_planning_blocked(db):
+    """planning_decision 来源的候选应用清除 planning_blocked。"""
+    run, user, novel, version, issue, candidate = await _setup_apply_test(
+        db, run_status="decision_required", planning_blocked=True, decision_id=42
+    )
+
+    # Change source_type to planning_decision
+    candidate.source_type = "planning_decision"
+    candidate.source_id = None
+    await db.flush()
+
+    svc = DraftVersionService(db, user.id, novel.id)
+    await svc.apply_revision(candidate.id)
+
+    await db.refresh(run)
+    assert run.planning_blocked is False
+    assert run.status == "completed"
+    assert run.decision_id is None
+
+
+@pytest.mark.asyncio
+async def test_apply_candidate_linked_to_pending_repair_marks_applied(db):
+    """应用关联 PendingRepair 的候选修订标记 repair 为 applied 并重新计算 has_pending_repairs。"""
+    run, user, novel, version, issue, candidate = await _setup_apply_test(db)
+
+    # Create a PendingRepair linked to the issue
+    from app.repositories.quality_gate_repo import PendingRepairRepo
+
+    repair_repo = PendingRepairRepo(db)
+    repair = await repair_repo.create(
+        novel.id,
+        None,
+        run.id,
+        {
+            "issue_type": "continuity",
+            "description": "连续性问题",
+            "location": "测试正文",
+            "context": "上下文",
+            "intent_type": "choice",
+            "review_issue_id": issue.id,
+        },
+    )
+    run.has_pending_repairs = True
+    await db.flush()
+
+    svc = DraftVersionService(db, user.id, novel.id)
+    await svc.apply_revision(candidate.id)
+
+    await db.refresh(repair)
+    assert repair.status == "applied"
+
+    await db.refresh(run)
+    assert run.has_pending_repairs is False
