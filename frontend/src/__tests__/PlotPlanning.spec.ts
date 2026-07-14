@@ -116,10 +116,17 @@ const draftRevisionFixture = {
   id: 1,
   novel_id: 1,
   writing_run_id: 1,
+  draft_version_id: null,
   parent_revision_id: null,
   decision_id: 1,
+  sequence: 1,
+  source_type: 'planning_decision' as const,
+  source_id: 1,
+  base_revision_sequence: 0,
+  base_content_hash: 'abc',
   base_content: '这是原始段落。这是保留的段落。这是将被替换的旧内容。',
   candidate_content: '这是原始段落。这是保留的段落。这是全新的内容。',
+  patches_json: [],
   scope_json: { start: 1, end: 2 },
   diff_json: {
     unchanged: ['这是原始段落。', '这是保留的段落。'],
@@ -127,6 +134,8 @@ const draftRevisionFixture = {
     added: ['这是全新的内容。'],
   },
   reason: '决策选择',
+  expanded_scope: false,
+  expanded_scope_reason: null,
   status: 'candidate' as const,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
@@ -399,10 +408,14 @@ describe('Phase 3 API contracts', () => {
     })
   })
 
-  it('applies a draft revision through the planning API', async () => {
+  it('applies a draft revision through the revisions API', async () => {
     const client = (await import('@/api/client')).default
+    vi.mocked(client.put).mockResolvedValueOnce({
+      version: { id: 1, novel_id: 1, chapter_id: null, writing_run_id: 1, based_on_version_id: null, version: 1, title: '', content: '', word_count: 0, change_reason: '', status: 'draft', revision_sequence: 0, acceptance_override_reason: null, created_at: '', updated_at: '' },
+      revision: { id: 1, novel_id: 1, writing_run_id: 1, draft_version_id: null, parent_revision_id: null, decision_id: null, sequence: 1, source_type: 'planning_decision', source_id: null, base_revision_sequence: 0, base_content_hash: '', base_content: '', candidate_content: '', patches_json: [], scope_json: {}, diff_json: {}, reason: '', expanded_scope: false, expanded_scope_reason: null, status: 'applied', created_at: '', updated_at: '' },
+    })
     await planningApi.applyDraftRevision(1, 30)
-    expect(client.put).toHaveBeenCalledWith('/novels/1/draft-revisions/30/apply')
+    expect(client.put).toHaveBeenCalledWith('/novels/1/draft-revisions/30/apply', { confirm_expanded_scope: false })
   })
 
   it('does not replace currentDraftRevision on API error', async () => {

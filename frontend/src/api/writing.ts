@@ -75,8 +75,13 @@ export function getWritingRun(novelId: number, runId: number): Promise<WritingRu
   return client.get(`/novels/${novelId}/writing-runs/${runId}`)
 }
 
-export function acceptWritingRun(novelId: number, runId: number): Promise<AcceptWritingRunResponse> {
-  return client.put(`/novels/${novelId}/writing-runs/${runId}/accept`)
+export function acceptWritingRun(
+  novelId: number,
+  runId: number,
+  options?: { force_accept?: boolean; force_reason?: string },
+): Promise<AcceptWritingRunResponse> {
+  const body = options ?? {}
+  return client.put(`/novels/${novelId}/writing-runs/${runId}/accept`, body)
 }
 
 export function discardWritingRun(novelId: number, runId: number): Promise<void> {

@@ -1,6 +1,7 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as api from '@/api/planning'
+import * as revisionApi from '@/api/revisions'
 import type { AuthorFoundation, AuthorFoundationUpdate, PlotUnit, PlotUnitCreate, PlotPlanRevision, PlanningDecision, DraftRevision, ChooseDecisionRequest } from '@/types/plotPlanning'
 
 export const usePlotPlanningStore = defineStore('plotPlanning', () => {
@@ -107,9 +108,10 @@ export const usePlotPlanningStore = defineStore('plotPlanning', () => {
   async function applyDraftRevision(novelId: number, revisionId: number) {
     loading.value = true
     try {
-      const revision = await api.applyDraftRevision(novelId, revisionId)
+      const response = await revisionApi.applyRevision(novelId, revisionId, false)
+      // Only clear local candidate after server success
       currentDraftRevision.value = null
-      return revision
+      return response.revision
     } finally {
       loading.value = false
     }

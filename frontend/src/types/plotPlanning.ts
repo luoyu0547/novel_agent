@@ -1,7 +1,10 @@
 export type PlotPlanStatus = 'draft' | 'active' | 'stale' | 'blocked' | 'superseded' | 'completed'
 export type DecisionSource = 'during_generation' | 'during_review'
 export type DecisionStatus = 'pending' | 'resolved' | 'superseded'
-export type DraftRevisionStatus = 'candidate' | 'applied' | 'superseded'
+
+// Re-export DraftRevision from canonical revision types for backward compat
+export type { DraftRevision, DraftRevisionStatus } from './revision'
+import type { DraftRevision } from './revision'
 
 export interface AuthorFoundation {
   id: number
@@ -97,22 +100,6 @@ export interface DecisionOption {
   label: string
   action: string
   consequence: string
-}
-
-export interface DraftRevision {
-  id: number
-  novel_id: number
-  writing_run_id: number | null
-  parent_revision_id: number | null
-  decision_id: number | null
-  base_content: string
-  candidate_content: string
-  scope_json: Record<string, unknown>
-  diff_json: Record<string, unknown>
-  reason: string
-  status: DraftRevisionStatus
-  created_at: string
-  updated_at: string
 }
 
 export interface ChooseDecisionRequest {

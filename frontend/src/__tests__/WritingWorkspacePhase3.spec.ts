@@ -251,10 +251,14 @@ describe('WritingWorkspace Phase 3 flow', () => {
       decision: { ...decisionFixture2, status: 'resolved' },
       new_plan: null,
       draft_revision: {
-        id: 1, novel_id: 1, writing_run_id: 2, parent_revision_id: null,
-        decision_id: 2, base_content: '', candidate_content: '',
-        scope_json: {}, diff_json: {}, reason: '', status: 'candidate',
-        created_at: '', updated_at: '',
+        id: 1, novel_id: 1, writing_run_id: 2, draft_version_id: null,
+        parent_revision_id: null, decision_id: 2, sequence: 1,
+        source_type: 'planning_decision', source_id: 2,
+        base_revision_sequence: 0, base_content_hash: '',
+        base_content: '', candidate_content: '',
+        patches_json: [], scope_json: {}, diff_json: {},
+        reason: '', expanded_scope: false, expanded_scope_reason: null,
+        status: 'candidate', created_at: '', updated_at: '',
       },
     })
 

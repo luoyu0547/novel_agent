@@ -1,5 +1,7 @@
 import client from './client'
+import { applyRevision as _applyRevision } from './revisions'
 import type { AuthorFoundation, AuthorFoundationUpdate, AuthorFoundationRevision, PlotUnit, PlotUnitCreate, PlotPlanRevision, PlanningDecision, ChooseDecisionRequest, DecisionResolution, DraftRevision } from '@/types/plotPlanning'
+import type { RevisionMutationResponse } from '@/types/revision'
 
 export function getFoundation(novelId: number): Promise<AuthorFoundation> {
   return client.get(`/novels/${novelId}/author-foundation`)
@@ -50,6 +52,6 @@ export function chooseDecision(novelId: number, decisionId: number, data: Choose
   return client.put(`/novels/${novelId}/planning-decisions/${decisionId}/choose`, data)
 }
 
-export function applyDraftRevision(novelId: number, revisionId: number): Promise<DraftRevision> {
-  return client.put(`/novels/${novelId}/draft-revisions/${revisionId}/apply`)
+export function applyDraftRevision(novelId: number, revisionId: number): Promise<RevisionMutationResponse> {
+  return _applyRevision(novelId, revisionId, false)
 }
