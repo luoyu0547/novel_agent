@@ -54,7 +54,8 @@ class DraftVersionService:
         return novel
 
     async def _get_owned_run(self, run_id: int) -> WritingRun:
-        """获取 run 并验证归属当前 novel。"""
+        """获取 run 并验证归属当前 novel（含 novel 归属校验）。"""
+        await self._ensure_owned_novel()
         result = await self.db.execute(
             select(WritingRun).where(
                 WritingRun.id == run_id,
@@ -173,6 +174,7 @@ class DraftVersionService:
 
     async def get_version(self, version_id: int) -> DraftVersion:
         """获取指定版本（含归属校验）。"""
+        await self._ensure_owned_novel()
         version = await self.repo.get(version_id, self.novel_id)
         if not version:
             raise NotFound("版本不存在")
@@ -527,6 +529,7 @@ class DraftVersionService:
 
     async def reject_revision(self, revision_id: int) -> DraftRevision:
         """拒绝一个候选修订。"""
+        await self._ensure_owned_novel()
         revision = await self.repo.get_revision(revision_id, self.novel_id)
         if not revision:
             raise NotFound("修订不存在")

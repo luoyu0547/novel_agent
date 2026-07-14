@@ -183,15 +183,3 @@ async def choose_decision(
         "new_plan": PlotPlanRevisionOut.model_validate(new_plan).model_dump() if new_plan else None,
         "draft_revision": DraftRevisionOut.model_validate(revision).model_dump(),
     })
-
-
-@router.put("/draft-revisions/{revision_id}/apply")
-async def apply_draft_revision(
-    novel_id: int,
-    revision_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    svc = _get_service(db, current_user, novel_id)
-    revision = await svc.apply_draft_revision(revision_id)
-    return ApiResponse.success(data=DraftRevisionOut.model_validate(revision).model_dump())
