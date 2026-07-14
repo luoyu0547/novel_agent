@@ -42,11 +42,30 @@ class QualityGateService:
         auto_rewrite_needed = False
         failed = []
 
+        # Counters for snapshot reporting
+        severity_counts = {"blocking": 0, "major": 0, "minor": 0}
+        resolution_counts = {"auto_fixable": 0, "needs_intent": 0}
+
         for r in results:
             if r.passed:
                 continue
             failed.append(r)
-            if r.severity == "auto_fixable":
+            severity_counts[r.severity] = severity_counts.get(r.severity, 0) + 1
+            resolution_counts[r.resolution_mode] = resolution_counts.get(r.resolution_mode, 0) + 1
+
+            # First persist ReviewIssue for every failed check
+            issue = await self.issue_repo.create(run.novel_id, run.id, {
+                "issue_type": r.issue_type,
+                "severity": r.severity,
+                "resolution_mode": r.resolution_mode,
+                "location": r.location,
+                "description": r.description or r.fix_description,
+                "related_memory": r.context or None,
+                "suggestion": r.fix_description or r.suggestion or "",
+                "acceptance_blocking": r.severity == "blocking",
+            })
+
+            if r.resolution_mode == "auto_fixable":
                 if r.fix_strategy == "full_rewrite":
                     auto_rewrite_needed = True
                     await self.log_repo.create(run.novel_id, run.id, {
@@ -56,6 +75,8 @@ class QualityGateService:
                         "old_text": "",
                         "new_text": "",
                     })
+                    # full_rewrite issue stays open only when retry budget is exhausted;
+                    # the cleanup path removes obsolete issues before the next check
                 elif r.fix_strategy == "local_replace" and r.fixed_text:
                     new_draft = run.draft_content.replace(r.location, r.fixed_text)
                     old_snippet = r.location[:100]
@@ -68,26 +89,25 @@ class QualityGateService:
                         "new_text": new_snippet,
                     })
                     run.draft_content = new_draft
-            elif r.severity == "needs_intent":
+                    # Successful internal local_replace marks ReviewIssue resolved
+                    # with no DraftRevision (v1 does not yet exist)
+                    await self.issue_repo.update(issue, {"status": "resolved"})
+            elif r.resolution_mode == "needs_intent":
                 has_pending = True
-                await self.pending_repo.create(run.novel_id, run.target_chapter_id or 0, run.id, {
-                    "issue_type": r.issue_type,
-                    "description": r.description,
-                    "location": r.location,
-                    "context": r.context,
-                    "options": r.options,
-                    "intent_type": r.intent_type or "freeform",
-                })
-
-            await self.issue_repo.create(run.novel_id, run.id, {
-                "issue_type": r.issue_type,
-                "severity": r.severity,
-                "location": r.location,
-                "description": r.description or r.fix_description,
-                "related_memory": r.context or None,
-                "suggestion": r.fix_description or "",
-                "acceptance_blocking": r.severity == "needs_intent",
-            })
+                await self.pending_repo.create(
+                    run.novel_id,
+                    run.target_chapter_id,  # never the sentinel value 0
+                    run.id,
+                    {
+                        "issue_type": r.issue_type,
+                        "description": r.description,
+                        "location": r.location,
+                        "context": r.context,
+                        "options": r.options,
+                        "intent_type": r.intent_type or "freeform",
+                        "review_issue_id": issue.id,
+                    },
+                )
 
         run.gated = True
         run.has_pending_repairs = has_pending
@@ -98,6 +118,8 @@ class QualityGateService:
             "issue_types": [r.issue_type for r in failed],
             "has_pending_repairs": has_pending,
             "rewrite_needed": auto_rewrite_needed,
+            "severity_counts": severity_counts,
+            "resolution_counts": resolution_counts,
         }
         run.gate_result_json = snapshot
 

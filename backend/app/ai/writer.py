@@ -334,7 +334,15 @@ draft：
 
 返回 JSON 字段：
 - narrative_conflicts: 叙事冲突数组，每项包含 source, core_conflict, options, recommended_index, recommendation_reason, impact_scope
-- quality_issues: 质量问题数组
+- quality_issues: 质量问题数组，每项包含：
+  - issue_type: 问题类型（如 style, character, continuity）
+  - severity: 影响程度，"blocking"（阻塞验收）、"major"（重大问题）或 "minor"（轻微问题）
+  - resolution_mode: "auto_fixable"（可自动修复）或 "needs_intent"（需要作者意图）
+  - location: 问题位置
+  - description: 问题描述
+  - related_memory: 相关记忆（可选）
+  - suggestion: 修复建议
+  - acceptance_blocking: 是否阻塞验收（布尔）
 - has_continuity_conflicts: 是否有连续性冲突（布尔）
 - verdict: "pass" | "revise"
 

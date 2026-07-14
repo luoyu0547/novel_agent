@@ -19,7 +19,8 @@ from app.ai.quality_gate import AGENT_TYPES, BaseQualityGateAgent, CheckResult
 
 logger = logging.getLogger("novel_agent.ai.quality_agents")
 
-ALLOWED_SEVERITIES = {"auto_fixable", "needs_intent"}
+ALLOWED_SEVERITIES = {"blocking", "major", "minor"}
+ALLOWED_RESOLUTION_MODES = {"auto_fixable", "needs_intent"}
 
 
 class _ParsedItem(BaseModel):
@@ -27,6 +28,7 @@ class _ParsedItem(BaseModel):
 
     passed: bool
     severity: str
+    resolution_mode: str = "auto_fixable"
     fix_strategy: Optional[str] = None
     fixed_text: Optional[str] = None
     fix_description: str = ""
@@ -41,8 +43,15 @@ def parse_check_results(raw: str, issue_type: str) -> list[CheckResult]:
     """Validate a raw model response into ``CheckResult`` objects.
 
     Ignores unknown fields. Raises ``ValueError``/``ValidationError`` on malformed
-    JSON, missing required fields or an invalid severity so the service can convert
-    the failure into a ``gated=False`` diagnostic instead of crashing the run.
+    JSON, missing required fields or an invalid severity/resolution_mode so the
+    service can convert the failure into a ``gated=False`` diagnostic instead of
+    crashing the run.
+
+    Validation rules:
+    - severity must be one of: blocking, major, minor
+    - resolution_mode must be one of: auto_fixable, needs_intent
+    - fix_strategy is legal only for auto_fixable
+    - options/intent_type are legal only for needs_intent
     """
     data = json.loads(raw)
     if isinstance(data, dict):
@@ -55,11 +64,20 @@ def parse_check_results(raw: str, issue_type: str) -> list[CheckResult]:
         parsed = _ParsedItem.model_validate(item)
         if parsed.severity not in ALLOWED_SEVERITIES:
             raise ValueError(f"invalid severity: {parsed.severity}")
+        if parsed.resolution_mode not in ALLOWED_RESOLUTION_MODES:
+            raise ValueError(f"invalid resolution_mode: {parsed.resolution_mode}")
+        # fix_strategy is legal only for auto_fixable
+        if parsed.resolution_mode != "auto_fixable" and parsed.fix_strategy:
+            raise ValueError("fix_strategy is legal only for auto_fixable")
+        # options/intent_type are legal only for needs_intent
+        if parsed.resolution_mode != "needs_intent" and (parsed.options or parsed.intent_type):
+            raise ValueError("options/intent_type are legal only for needs_intent")
         results.append(
             CheckResult(
                 issue_type=issue_type,
                 passed=parsed.passed,
                 severity=parsed.severity,
+                resolution_mode=parsed.resolution_mode,
                 fix_strategy=parsed.fix_strategy,
                 fixed_text=parsed.fixed_text,
                 fix_description=parsed.fix_description,
@@ -100,7 +118,8 @@ class BaseQualityChecker(abc.ABC):
 
 请只针对该维度输出审阅结果，以 JSON 数组返回，每个元素字段如下：
 - passed: 布尔，该维度是否通过
-- severity: "auto_fixable"（可自动修复）或 "needs_intent"（需要作者意图）
+- severity: 影响程度，"blocking"（阻塞验收）、"major"（重大问题）或 "minor"（轻微问题）
+- resolution_mode: "auto_fixable"（可自动修复）或 "needs_intent"（需要作者意图）
 - fix_strategy: 可选，"full_rewrite"（整体重写）或 "local_replace"（局部替换），仅 auto_fixable 时有效
 - fixed_text: 可选，局部替换时的新文本
 - fix_description: 可选，修复说明
@@ -110,7 +129,7 @@ class BaseQualityChecker(abc.ABC):
 - location: 问题在草稿中的位置或原文片段
 - context: 相关上下文片段
 
-若该维度通过，返回 [{{"passed": true, "severity": "auto_fixable"}}]。
+若该维度通过，返回 [{{"passed": true, "severity": "minor", "resolution_mode": "auto_fixable"}}]。
 只返回 JSON，不要其他内容。"""
 
     async def _call_llm_json(self, prompt: str) -> str:

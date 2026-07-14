@@ -97,7 +97,7 @@ async def _setup_run_with_issue(
         run.id,
         {
             "issue_type": "continuity",
-            "severity": "needs_intent",
+            "severity": "blocking",
             "resolution_mode": "needs_intent",
             "location": issue_location,
             "description": "连续性问题",

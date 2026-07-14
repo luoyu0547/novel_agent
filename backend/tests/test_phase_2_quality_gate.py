@@ -1,4 +1,8 @@
-"""Tests for Quality Gate Phase 2: RepairLog, PendingRepair models and WritingRun extensions."""
+"""Tests for Quality Gate Phase 2: RepairLog, PendingRepair models and WritingRun extensions.
+
+Updated for Task 8: severity (blocking/major/minor) and resolution_mode
+(auto_fixable/needs_intent) are now independent dimensions.
+"""
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -196,7 +200,8 @@ async def test_fake_quality_gate_returns_all_passed():
     assert len(results) == 7
     for r in results:
         assert r.passed is True
-        assert r.severity == "auto_fixable"
+        assert r.severity == "minor"
+        assert r.resolution_mode == "auto_fixable"
 
 
 @pytest.mark.asyncio
@@ -315,7 +320,7 @@ async def test_get_repairs_endpoint(client, novel_and_headers):
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 real quality gate checks (Task 2)
+# Phase 2 real quality gate checks (Task 2) — updated for Task 8
 # ---------------------------------------------------------------------------
 
 
@@ -392,10 +397,141 @@ async def _seed_writing_setup(db):
     return user.id, novel.id, brief.id
 
 
+# ---------------------------------------------------------------------------
+# Task 8: Two-dimensional severity + resolution_mode tests
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_quality_gate_service_needs_intent_and_auto_fixable(db):
-    """One needs_intent character issue + one auto_fixable style issue creates the
-    correct repair records, keeps location/context, and returns has_pending_repairs."""
+async def test_major_auto_fixable_requests_internal_rewrite(db):
+    """major + auto_fixable with full_rewrite requests internal rewrite."""
+    from app.models.writing import WritingRun
+
+    run = WritingRun(
+        novel_id=1,
+        chapter_brief_id=1,
+        context_package_id=1,
+        status="running",
+        draft_content="草稿正文",
+        word_count=4,
+    )
+    db.add(run)
+    await db.flush()
+
+    results = [
+        CheckResult(
+            passed=False,
+            issue_type="style",
+            severity="major",
+            resolution_mode="auto_fixable",
+            fix_strategy="full_rewrite",
+            fix_description="重写",
+        ),
+    ]
+    svc = QualityGateService(db=db, agent=ScriptedFakeAgent(results))
+    result = await svc.run(run, {}, {})
+
+    assert result["gated"] is True
+    assert result["rewrite_needed"] is True
+    assert result["has_pending_repairs"] is False
+
+    # RepairLog records the rewrite
+    log_repo = RepairLogRepo(db)
+    logs = await log_repo.list_by_writing_run(run.id)
+    assert len(logs) == 1
+    assert logs[0].issue_type == "style"
+
+    # ReviewIssue persisted with severity=major, resolution_mode=auto_fixable
+    from app.models.quality_gate import ReviewIssue
+    from sqlalchemy import select
+
+    issues = (await db.execute(select(ReviewIssue).where(ReviewIssue.writing_run_id == run.id))).scalars().all()
+    assert len(issues) == 1
+    assert issues[0].severity == "major"
+    assert issues[0].resolution_mode == "auto_fixable"
+    assert issues[0].acceptance_blocking is False  # only blocking severity blocks
+    assert issues[0].status == "open"  # full_rewrite stays open when budget not exhausted yet
+
+    # Snapshot reports counts
+    snapshot = result["snapshot"]
+    assert snapshot["severity_counts"]["major"] == 1
+    assert snapshot["resolution_counts"]["auto_fixable"] == 1
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_blocking_needs_intent_creates_open_issue_and_pending_repair(db):
+    """blocking + needs_intent creates an open ReviewIssue and linked PendingRepair."""
+    from app.models.writing import WritingRun
+
+    run = WritingRun(
+        novel_id=1,
+        chapter_brief_id=1,
+        context_package_id=1,
+        target_chapter_id=5,
+        status="running",
+        draft_content="草稿正文",
+        word_count=4,
+    )
+    db.add(run)
+    await db.flush()
+
+    results = [
+        CheckResult(
+            passed=False,
+            issue_type="character",
+            severity="blocking",
+            resolution_mode="needs_intent",
+            description="角色反应与既定人设不符",
+            location="第3段",
+            context="主角突然表现出与谨慎人设相悖的冲动",
+            options=[{"label": "保持谨慎", "summary": "补充犹豫动机"}],
+            intent_type="choice",
+        ),
+    ]
+    svc = QualityGateService(db=db, agent=ScriptedFakeAgent(results))
+    result = await svc.run(run, {}, {})
+
+    assert result["gated"] is True
+    assert result["has_pending_repairs"] is True
+    assert result["rewrite_needed"] is False
+
+    # PendingRepair keeps character issue location/context/options/intent_type
+    pend_repo = PendingRepairRepo(db)
+    repairs = await pend_repo.list_by_writing_run(run.id)
+    assert len(repairs) == 1
+    pr = repairs[0]
+    assert pr.issue_type == "character"
+    assert pr.location == "第3段"
+    assert pr.context == "主角突然表现出与谨慎人设相悖的冲动"
+    assert pr.intent_type == "choice"
+    assert pr.options == [{"label": "保持谨慎", "summary": "补充犹豫动机"}]
+    assert pr.chapter_id == 5  # target_chapter_id, not sentinel 0
+
+    # ReviewIssue persisted with severity=blocking, acceptance_blocking=True
+    from app.models.quality_gate import ReviewIssue
+    from sqlalchemy import select
+
+    issues = (await db.execute(select(ReviewIssue).where(ReviewIssue.writing_run_id == run.id))).scalars().all()
+    assert len(issues) == 1
+    assert issues[0].severity == "blocking"
+    assert issues[0].resolution_mode == "needs_intent"
+    assert issues[0].acceptance_blocking is True  # blocking severity
+    assert issues[0].status == "open"
+
+    # PendingRepair linked to ReviewIssue
+    assert pr.review_issue_id == issues[0].id
+
+    # Snapshot reports counts
+    snapshot = result["snapshot"]
+    assert snapshot["severity_counts"]["blocking"] == 1
+    assert snapshot["resolution_counts"]["needs_intent"] == 1
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_minor_auto_fixable_local_replace_marks_resolved(db):
+    """minor + auto_fixable with local_replace marks ReviewIssue resolved immediately."""
     from app.models.writing import WritingRun
 
     run = WritingRun(
@@ -412,18 +548,79 @@ async def test_quality_gate_service_needs_intent_and_auto_fixable(db):
     results = [
         CheckResult(
             passed=False,
+            issue_type="style",
+            severity="minor",
+            resolution_mode="auto_fixable",
+            fix_strategy="local_replace",
+            fixed_text="修正后的文风片段",
+            fix_description="替换口语化表达",
+            location="原文片段ABC",
+        ),
+    ]
+    svc = QualityGateService(db=db, agent=ScriptedFakeAgent(results))
+    result = await svc.run(run, {}, {})
+
+    assert result["gated"] is True
+    assert result["has_pending_repairs"] is False
+    assert result["rewrite_needed"] is False
+
+    # RepairLog records the local replace and draft is updated
+    log_repo = RepairLogRepo(db)
+    logs = await log_repo.list_by_writing_run(run.id)
+    assert len(logs) == 1
+    assert logs[0].issue_type == "style"
+    refreshed = await db.get(WritingRun, run.id)
+    assert refreshed.draft_content == "修正后的文风片段剩余正文"
+
+    # ReviewIssue is resolved (successful local_replace)
+    from app.models.quality_gate import ReviewIssue
+    from sqlalchemy import select
+
+    issues = (await db.execute(select(ReviewIssue).where(ReviewIssue.writing_run_id == run.id))).scalars().all()
+    assert len(issues) == 1
+    assert issues[0].severity == "minor"
+    assert issues[0].resolution_mode == "auto_fixable"
+    assert issues[0].status == "resolved"
+    assert issues[0].acceptance_blocking is False
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_mixed_severity_and_resolution_mode(db):
+    """Multiple issues with different severity + resolution_mode combinations."""
+    from app.models.writing import WritingRun
+
+    run = WritingRun(
+        novel_id=1,
+        chapter_brief_id=1,
+        context_package_id=1,
+        target_chapter_id=7,
+        status="running",
+        draft_content="原文片段ABC剩余正文",
+        word_count=10,
+    )
+    db.add(run)
+    await db.flush()
+
+    results = [
+        # blocking + needs_intent → open issue + PendingRepair
+        CheckResult(
+            passed=False,
             issue_type="character",
-            severity="needs_intent",
+            severity="blocking",
+            resolution_mode="needs_intent",
             description="角色反应与既定人设不符",
             location="第3段",
             context="主角突然表现出与谨慎人设相悖的冲动",
             options=[{"label": "方案A", "summary": "保持谨慎"}, {"label": "方案B", "summary": "解释冲动原因"}],
             intent_type="choice",
         ),
+        # minor + auto_fixable with local_replace → resolved issue
         CheckResult(
             passed=False,
             issue_type="style",
-            severity="auto_fixable",
+            severity="minor",
+            resolution_mode="auto_fixable",
             fix_strategy="local_replace",
             fixed_text="修正后的文风片段",
             fix_description="替换口语化表达",
@@ -436,16 +633,14 @@ async def test_quality_gate_service_needs_intent_and_auto_fixable(db):
     assert result["gated"] is True
     assert result["has_pending_repairs"] is True
 
-    # PendingRepair keeps character issue location/context/options/intent_type
+    # PendingRepair keeps character issue
     pend_repo = PendingRepairRepo(db)
     repairs = await pend_repo.list_by_writing_run(run.id)
     assert len(repairs) == 1
     pr = repairs[0]
     assert pr.issue_type == "character"
-    assert pr.location == "第3段"
-    assert pr.context == "主角突然表现出与谨慎人设相悖的冲动"
-    assert pr.intent_type == "choice"
-    assert pr.options == [{"label": "方案A", "summary": "保持谨慎"}, {"label": "方案B", "summary": "解释冲动原因"}]
+    assert pr.chapter_id == 7
+    assert pr.review_issue_id is not None
 
     # RepairLog records the local replace and draft is updated
     log_repo = RepairLogRepo(db)
@@ -461,30 +656,96 @@ async def test_quality_gate_service_needs_intent_and_auto_fixable(db):
 
     issues = (await db.execute(select(ReviewIssue).where(ReviewIssue.writing_run_id == run.id))).scalars().all()
     assert len(issues) == 2
-    issue_types = {i.issue_type for i in issues}
-    assert issue_types == {"character", "style"}
+    issue_map = {i.issue_type: i for i in issues}
+    # character: blocking + needs_intent → open, acceptance_blocking=True
+    assert issue_map["character"].severity == "blocking"
+    assert issue_map["character"].resolution_mode == "needs_intent"
+    assert issue_map["character"].acceptance_blocking is True
+    assert issue_map["character"].status == "open"
+    # style: minor + auto_fixable → resolved
+    assert issue_map["style"].severity == "minor"
+    assert issue_map["style"].resolution_mode == "auto_fixable"
+    assert issue_map["style"].acceptance_blocking is False
+    assert issue_map["style"].status == "resolved"
+
+    # Snapshot reports counts
+    snapshot = result["snapshot"]
+    assert snapshot["severity_counts"]["blocking"] == 1
+    assert snapshot["severity_counts"]["minor"] == 1
+    assert snapshot["resolution_counts"]["needs_intent"] == 1
+    assert snapshot["resolution_counts"]["auto_fixable"] == 1
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_severity_alone_never_selects_repair_strategy(db):
+    """Severity alone never selects a repair strategy; resolution_mode does."""
+    from app.models.writing import WritingRun
+
+    run = WritingRun(
+        novel_id=1,
+        chapter_brief_id=1,
+        context_package_id=1,
+        status="running",
+        draft_content="草稿正文",
+        word_count=4,
+    )
+    db.add(run)
+    await db.flush()
+
+    # blocking + auto_fixable: severity is blocking but resolution is auto_fixable
+    # This should trigger internal rewrite, NOT create PendingRepair
+    results = [
+        CheckResult(
+            passed=False,
+            issue_type="continuity",
+            severity="blocking",
+            resolution_mode="auto_fixable",
+            fix_strategy="full_rewrite",
+            fix_description="重写",
+        ),
+    ]
+    svc = QualityGateService(db=db, agent=ScriptedFakeAgent(results))
+    result = await svc.run(run, {}, {})
+
+    assert result["rewrite_needed"] is True
+    assert result["has_pending_repairs"] is False  # no PendingRepair despite blocking severity
+
+    # ReviewIssue has acceptance_blocking=True (blocking severity) but resolution_mode=auto_fixable
+    from app.models.quality_gate import ReviewIssue
+    from sqlalchemy import select
+
+    issues = (await db.execute(select(ReviewIssue).where(ReviewIssue.writing_run_id == run.id))).scalars().all()
+    assert len(issues) == 1
+    assert issues[0].severity == "blocking"
+    assert issues[0].resolution_mode == "auto_fixable"
+    assert issues[0].acceptance_blocking is True  # blocking severity
     await db.rollback()
 
 
 @pytest.mark.asyncio
 async def test_parse_check_results_contract():
-    """Parsed results always carry an allowed issue type and severity."""
+    """Parsed results always carry an allowed issue type, severity and resolution_mode."""
     from app.ai.quality_agents import parse_check_results
 
     raw = '''
     [
-        {"passed": true, "severity": "auto_fixable", "extra_field": "ignored"},
-        {"passed": false, "severity": "needs_intent", "location": "第2段", "description": "问题", "unknown": 1}
+        {"passed": true, "severity": "minor", "resolution_mode": "auto_fixable", "extra_field": "ignored"},
+        {"passed": false, "severity": "blocking", "resolution_mode": "needs_intent", "location": "第2段", "description": "问题", "unknown": 1}
     ]
     '''
     results = parse_check_results(raw, "continuity")
     assert len(results) == 2
     for r in results:
         assert r.issue_type == "continuity"
-        assert r.issue_type in AGENT_TYPES
-        assert r.severity in ("auto_fixable", "needs_intent")
+        assert r.severity in ("blocking", "major", "minor")
+        assert r.resolution_mode in ("auto_fixable", "needs_intent")
     assert results[0].passed is True
+    assert results[0].severity == "minor"
+    assert results[0].resolution_mode == "auto_fixable"
     assert results[1].passed is False
+    assert results[1].severity == "blocking"
+    assert results[1].resolution_mode == "needs_intent"
 
 
 @pytest.mark.asyncio
@@ -503,6 +764,27 @@ async def test_parse_check_results_malformed_raises():
     try:
         parse_check_results('[{"passed": false, "severity": "bogus"}]', "style")
         assert False, "expected raise on invalid severity"
+    except Exception:
+        pass
+
+    # invalid resolution_mode
+    try:
+        parse_check_results('[{"passed": false, "severity": "major", "resolution_mode": "invalid"}]', "style")
+        assert False, "expected raise on invalid resolution_mode"
+    except Exception:
+        pass
+
+    # fix_strategy on needs_intent
+    try:
+        parse_check_results('[{"passed": false, "severity": "major", "resolution_mode": "needs_intent", "fix_strategy": "full_rewrite"}]', "style")
+        assert False, "expected raise on fix_strategy with needs_intent"
+    except Exception:
+        pass
+
+    # options on auto_fixable
+    try:
+        parse_check_results('[{"passed": false, "severity": "minor", "resolution_mode": "auto_fixable", "options": [{"label": "A"}]}]', "style")
+        assert False, "expected raise on options with auto_fixable"
     except Exception:
         pass
 
@@ -558,7 +840,7 @@ async def test_writing_run_three_iteration_limit(db):
 
     gen = CountingFakeGenerator()
     always_rewrite = ScriptedFakeAgent(
-        [CheckResult(passed=False, issue_type="style", severity="auto_fixable", fix_strategy="full_rewrite", fix_description="重写")]
+        [CheckResult(passed=False, issue_type="style", severity="major", resolution_mode="auto_fixable", fix_strategy="full_rewrite", fix_description="重写")]
     )
     svc = WritingService(db=db, user_id=user_id, novel_id=novel_id, generator=gen, gate_agent=always_rewrite)
     run = await svc.create_writing_run(brief_id)
@@ -652,7 +934,7 @@ async def test_repair_service_apply_creates_candidate_revision(db):
         run_id,
         {
             "issue_type": "character",
-            "severity": "needs_intent",
+            "severity": "blocking",
             "resolution_mode": "needs_intent",
             "location": "特定段落",
             "description": "角色抉择",
@@ -732,7 +1014,7 @@ async def test_repair_service_dismiss_ignores_issue(db):
         run_id,
         {
             "issue_type": "character",
-            "severity": "needs_intent",
+            "severity": "blocking",
             "resolution_mode": "needs_intent",
             "location": "某段落",
             "description": "角色抉择",

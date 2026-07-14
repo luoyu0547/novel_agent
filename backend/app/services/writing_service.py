@@ -646,18 +646,20 @@ class WritingService:
         issue_repo = ReviewIssueRepo(self.db)
         for qi in review.quality_issues:
             issue = await issue_repo.create(self.novel_id, run_id, {
-                "issue_type": qi.get("issue_type", "unknown"),
-                "severity": qi.get("severity", "warning"),
-                "location": qi.get("location", ""),
-                "description": qi.get("description", ""),
-                "related_memory": qi.get("related_memory"),
-                "suggestion": qi.get("suggestion", ""),
-                "acceptance_blocking": qi.get("acceptance_blocking", False),
+                "issue_type": qi.issue_type,
+                "severity": qi.severity,
+                "resolution_mode": qi.resolution_mode,
+                "location": qi.location,
+                "description": qi.description,
+                "related_memory": qi.related_memory,
+                "suggestion": qi.suggestion,
+                "acceptance_blocking": qi.severity == "blocking",
             })
             review_issues.append({
                 "id": issue.id,
                 "issue_type": issue.issue_type,
                 "severity": issue.severity,
+                "resolution_mode": issue.resolution_mode,
                 "location": issue.location,
                 "description": issue.description,
                 "related_memory": issue.related_memory,

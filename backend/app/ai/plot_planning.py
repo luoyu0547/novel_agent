@@ -55,9 +55,21 @@ class PlotPlanOutput(BaseModel):
     completion_criteria: list[str] = Field(min_length=1)
 
 
+class QualityIssueOutput(BaseModel):
+    """Typed quality issue from draft review, with independent severity and resolution_mode."""
+    issue_type: str = "unknown"
+    severity: Literal["blocking", "major", "minor"] = "major"
+    resolution_mode: Literal["auto_fixable", "needs_intent"] = "auto_fixable"
+    location: str = ""
+    description: str = ""
+    related_memory: str | None = None
+    suggestion: str = ""
+    acceptance_blocking: bool = False
+
+
 class DraftReviewOutput(BaseModel):
     narrative_conflicts: list[ConflictOutput] = Field(default_factory=list)
-    quality_issues: list[dict[str, Any]] = Field(default_factory=list)
+    quality_issues: list[QualityIssueOutput] = Field(default_factory=list)
     has_continuity_conflicts: bool = False
     verdict: Literal["pass", "revise"] = "pass"
 

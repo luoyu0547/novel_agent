@@ -8,6 +8,7 @@ from app.ai.plot_planning import (
     DraftReviewOutput,
     LocalRevisionOutput,
     PlotPlanOutput,
+    QualityIssueOutput,
 )
 from app.ai.writer import DeepSeekWritingGenerator, FakePhase3WritingGenerator
 from app.ai.quality_gate import FakeQualityGateAgent
@@ -620,7 +621,7 @@ async def test_review_does_not_turn_style_issue_into_decision(db):
     generator = FakePhase3WritingGenerator(
         review=DraftReviewOutput(
             narrative_conflicts=[],
-            quality_issues=[{"issue_type": "style", "severity": "warning", "description": "句式重复", "location": "第2段"}],
+            quality_issues=[QualityIssueOutput(issue_type="style", severity="minor", resolution_mode="auto_fixable", description="句式重复", location="第2段")],
         )
     )
     service = WritingService(db=db, user_id=1, novel_id=1, generator=generator)

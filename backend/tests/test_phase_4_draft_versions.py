@@ -568,17 +568,18 @@ class _RewritingFakeGateAgent:
                 CheckResult(
                     passed=False,
                     issue_type="length",
-                    severity="auto_fixable",
+                    severity="major",
+                    resolution_mode="auto_fixable",
                     fix_strategy="full_rewrite",
                     fix_description="需要扩写",
                 )
             ] + [
-                CheckResult(passed=True, issue_type=t, severity="auto_fixable")
+                CheckResult(passed=True, issue_type=t, severity="minor", resolution_mode="auto_fixable")
                 for t in AGENT_TYPES
                 if t != "length"
             ]
         return [
-            CheckResult(passed=True, issue_type=t, severity="auto_fixable")
+            CheckResult(passed=True, issue_type=t, severity="minor", resolution_mode="auto_fixable")
             for t in AGENT_TYPES
         ]
 
@@ -696,7 +697,7 @@ async def test_blocking_issue_blocks_normal_accept(db):
     issue_repo = ReviewIssueRepo(db)
     await issue_repo.create(novel.id, run.id, {
         "issue_type": "continuity",
-        "severity": "needs_intent",
+        "severity": "blocking",
         "resolution_mode": "needs_intent",
         "location": "段落3",
         "description": "连续性问题",
@@ -723,7 +724,7 @@ async def test_force_accept_without_reason_raises_error(db):
     issue_repo = ReviewIssueRepo(db)
     await issue_repo.create(novel.id, run.id, {
         "issue_type": "continuity",
-        "severity": "needs_intent",
+        "severity": "blocking",
         "resolution_mode": "needs_intent",
         "location": "段落3",
         "description": "连续性问题",
@@ -750,7 +751,7 @@ async def test_force_accept_with_reason_stores_override(db):
     issue_repo = ReviewIssueRepo(db)
     await issue_repo.create(novel.id, run.id, {
         "issue_type": "continuity",
-        "severity": "needs_intent",
+        "severity": "blocking",
         "resolution_mode": "needs_intent",
         "location": "段落3",
         "description": "连续性问题",

@@ -30,7 +30,8 @@ async def test_generate_options_real_output():
         "current_content": "他走进房间，看到桌上放着一封信。他拿起信，拆开信封。",
         "issue": {
             "issue_type": "style",
-            "severity": "auto_fixable",
+            "severity": "minor",
+            "resolution_mode": "auto_fixable",
             "location": "他走进房间",
             "description": "连续使用'他'开头，造成句式单调",
             "related_memory": "",
@@ -71,7 +72,8 @@ async def test_create_revision_reconstructs_from_patches():
         "current_content": base_content,
         "issue": {
             "issue_type": "style",
-            "severity": "auto_fixable",
+            "severity": "minor",
+            "resolution_mode": "auto_fixable",
             "location": "他走进房间",
             "description": "连续使用'他'开头，造成句式单调",
             "related_memory": "",
