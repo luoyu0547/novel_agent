@@ -1,6 +1,6 @@
 import client from './client'
 import { applyRevision as _applyRevision } from './revisions'
-import type { AuthorFoundation, AuthorFoundationUpdate, AuthorFoundationRevision, PlotUnit, PlotUnitCreate, PlotPlanRevision, PlanningDecision, ChooseDecisionRequest, DecisionResolution, DraftRevision } from '@/types/plotPlanning'
+import type { AuthorFoundation, AuthorFoundationUpdate, AuthorFoundationRevision, PlotUnit, PlotUnitCreate, PlotPlanRevision, PlanningDecision, ChooseDecisionRequest, DecisionResolution } from '@/types/plotPlanning'
 import type { RevisionMutationResponse } from '@/types/revision'
 
 export function getFoundation(novelId: number): Promise<AuthorFoundation> {

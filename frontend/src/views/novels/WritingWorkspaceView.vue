@@ -2,11 +2,16 @@
 import { useWritingStore } from '@/stores/writing'
 import { usePlotPlanningStore } from '@/stores/plotPlanning'
 import { usePendingMemoryStore } from '@/stores/pendingMemory'
+import { useRevisionsStore } from '@/stores/revisions'
 import NovelWorkspaceTabs from '@/components/novels/NovelWorkspaceTabs.vue'
 import PlotUnitPanel from '@/components/writing/PlotUnitPanel.vue'
 import AuthorFoundationPanel from '@/components/writing/AuthorFoundationPanel.vue'
 import DecisionCard from '@/components/writing/DecisionCard.vue'
 import DraftRevisionDiff from '@/components/writing/DraftRevisionDiff.vue'
+import ReviewIssuePanel from '@/components/writing/ReviewIssuePanel.vue'
+import RevisionCandidatePanel from '@/components/writing/RevisionCandidatePanel.vue'
+import DraftVersionTimeline from '@/components/writing/DraftVersionTimeline.vue'
+import RevisionHistoryPanel from '@/components/writing/RevisionHistoryPanel.vue'
 import type { NovelBlueprint, WritingRun } from '@/types/writing'
 import type { PlotUnitCreate, PlotUnit } from '@/types/plotPlanning'
 import * as writingApi from '@/api/writing'
@@ -15,6 +20,7 @@ const route = useRoute()
 const store = useWritingStore()
 const ppStore = usePlotPlanningStore()
 const pendingMemoryStore = usePendingMemoryStore()
+const revisionsStore = useRevisionsStore()
 const novelId = Number(route.params.id)
 
 const authorInput = ref('')
@@ -22,6 +28,15 @@ const showBlueprintEditor = ref(false)
 const editingBlueprintId = ref<number | null>(null)
 const blueprintText = ref('')
 const activeSection = ref<'blueprint' | 'plan' | 'brief' | 'context' | 'draft' | 'decision' | 'revision'>('blueprint')
+
+// Phase 4: editor buffer tracks current version content
+const editorContent = ref('')
+const editorChangeReason = ref('')
+const ignoreReason = ref('')
+const showIgnoreDialog = ref(false)
+const ignoreIssueId = ref<number | null>(null)
+const forceAcceptReason = ref('')
+const showForceAcceptDialog = ref(false)
 
 const latestDraftBlueprint = computed(() =>
   store.blueprints.find(b => b.status === 'draft') || null,
@@ -42,6 +57,34 @@ const decisionRequiredRun = computed<WritingRun | null>(() =>
   store.writingRuns.find(r => r.status === 'decision_required') || null,
 )
 
+// Phase 4: determine if workspace is read-only
+const isReadOnly = computed(() => {
+  if (!activeRun.value) return false
+  return ['accepted', 'discarded', 'locked'].includes(activeRun.value.status)
+})
+
+// Phase 4: internal revisions for the timeline (applied revisions on current version)
+const internalRevisions = computed(() =>
+  revisionsStore.revisions.filter(r => r.status === 'applied'),
+)
+
+// Phase 4: open blocking issues
+const blockingIssues = computed(() =>
+  revisionsStore.reviewIssues.filter(i => i.status === 'open' && i.severity === 'blocking'),
+)
+
+// Phase 4: pending candidates
+const pendingCandidates = computed(() =>
+  revisionsStore.revisions.filter(r => r.status === 'candidate'),
+)
+
+// Watch currentVersion to sync editor buffer
+watch(() => revisionsStore.currentVersion, (v) => {
+  if (v) {
+    editorContent.value = v.content
+  }
+}, { immediate: true })
+
 onMounted(async () => {
   await store.fetchBlueprints(novelId)
   if (store.activeBlueprint) {
@@ -54,6 +97,16 @@ onMounted(async () => {
   await ppStore.fetchPlotUnits(novelId)
   await ppStore.fetchPendingDecisions(novelId)
 })
+
+// Phase 4: Load Phase 4 data when an active run exists
+watch(activeRun, async (run) => {
+  if (run && (run.status === 'completed' || run.status === 'decision_required')) {
+    await revisionsStore.loadWorkspace(novelId, run.id)
+    if (revisionsStore.currentVersion) {
+      editorContent.value = revisionsStore.currentVersion.content
+    }
+  }
+}, { immediate: true })
 
 async function handleGenerateBlueprint() {
   if (!authorInput.value.trim()) {
@@ -117,8 +170,27 @@ async function handleGenerateDraft() {
 }
 
 async function handleAcceptRun(runId: number) {
+  // Phase 4: Check for blocking issues
+  if (blockingIssues.value.length > 0) {
+    forceAcceptReason.value = ''
+    showForceAcceptDialog.value = true
+    return
+  }
+
+  // Phase 4: Check for pending candidates
+  if (pendingCandidates.value.length > 0) {
+    ElMessage.warning('存在待处理的候选修订，请先处理')
+    activeSection.value = 'revision'
+    return
+  }
+
+  await doAcceptRun(runId)
+}
+
+async function doAcceptRun(runId: number, forceReason?: string) {
   try {
-    const result = await store.acceptRun(novelId, runId)
+    const acceptOptions = forceReason ? { force_accept: true, force_reason: forceReason } : undefined
+    const result = await store.acceptRun(novelId, runId, acceptOptions)
     pendingCountAfterAccept.value = result.extraction.pending_count
     extractionError.value = result.extraction.error
     ElMessage.success('草稿已接受并写入章节')
@@ -128,6 +200,12 @@ async function handleAcceptRun(runId: number) {
   } catch {
     ElMessage.error('接受失败')
   }
+}
+
+async function handleForceAccept() {
+  if (!forceAcceptReason.value.trim() || !activeRun.value) return
+  showForceAcceptDialog.value = false
+  await doAcceptRun(activeRun.value.id, forceAcceptReason.value.trim())
 }
 
 async function handleDiscardRun(runId: number) {
@@ -196,6 +274,122 @@ async function handleReviewRun(runId: number) {
   }
 }
 
+// --- Phase 4 handlers ---
+
+async function handleGenerateOptions(issueId: number) {
+  revisionsStore.selectedIssueId = issueId
+  await revisionsStore.generateOptions(novelId, issueId)
+}
+
+async function handleCreateCandidate(issueId: number) {
+  revisionsStore.selectedIssueId = issueId
+  try {
+    await revisionsStore.createCandidate(novelId, issueId)
+    ElMessage.success('候选修订已创建')
+  } catch {
+    ElMessage.error('创建候选修订失败')
+  }
+}
+
+function handleIgnoreIssue(issueId: number) {
+  ignoreIssueId.value = issueId
+  ignoreReason.value = ''
+  showIgnoreDialog.value = true
+}
+
+async function confirmIgnoreIssue() {
+  if (!ignoreIssueId.value || !ignoreReason.value.trim()) return
+  try {
+    await revisionsStore.ignoreIssue(novelId, ignoreIssueId.value, { reason: ignoreReason.value.trim() })
+    ElMessage.success('问题已忽略')
+  } catch {
+    ElMessage.error('忽略问题失败')
+  }
+  showIgnoreDialog.value = false
+  ignoreIssueId.value = null
+}
+
+async function handleApplyCandidate(revisionId: number) {
+  const candidate = revisionsStore.candidate
+  const confirmExpanded = candidate?.expanded_scope ?? false
+  try {
+    await revisionsStore.applyRevision(novelId, revisionId, confirmExpanded)
+    // Sync editor content after apply
+    if (revisionsStore.currentVersion) {
+      editorContent.value = revisionsStore.currentVersion.content
+    }
+    ElMessage.success('修订已应用')
+  } catch {
+    ElMessage.error('应用修订失败')
+  }
+}
+
+async function handleRejectCandidate(revisionId: number) {
+  try {
+    await revisionsStore.rejectRevision(novelId, revisionId)
+    ElMessage.info('修订已拒绝')
+  } catch {
+    ElMessage.error('拒绝修订失败')
+  }
+}
+
+async function handleSaveManualRevision() {
+  if (!activeRun.value || !editorChangeReason.value.trim()) return
+  try {
+    await revisionsStore.saveManualRevision(novelId, activeRun.value.id, {
+      content: editorContent.value,
+      change_reason: editorChangeReason.value.trim(),
+      base_revision_sequence: revisionsStore.currentVersion?.revision_sequence ?? 0,
+    })
+    // Sync editor content with server-returned version
+    if (revisionsStore.currentVersion) {
+      editorContent.value = revisionsStore.currentVersion.content
+    }
+    editorChangeReason.value = ''
+    ElMessage.success('手动编辑已保存')
+  } catch {
+    ElMessage.error('保存失败')
+  }
+}
+
+async function handleCreateVersion(payload: { basedOnVersionId: number; changeReason: string }) {
+  if (!activeRun.value) return
+  try {
+    await revisionsStore.createVersion(novelId, activeRun.value.id, {
+      based_on_version_id: payload.basedOnVersionId,
+      change_reason: payload.changeReason,
+    })
+    if (revisionsStore.currentVersion) {
+      editorContent.value = revisionsStore.currentVersion.content
+    }
+    ElMessage.success('新版本已创建')
+  } catch {
+    ElMessage.error('创建版本失败')
+  }
+}
+
+async function handleRestoreVersion(payload: { versionId: number; changeReason: string }) {
+  try {
+    await revisionsStore.restoreVersion(novelId, payload.versionId, {
+      base_revision_sequence: revisionsStore.currentVersion?.revision_sequence ?? 0,
+      change_reason: payload.changeReason,
+    })
+    if (revisionsStore.currentVersion) {
+      editorContent.value = revisionsStore.currentVersion.content
+    }
+    ElMessage.success('版本已恢复')
+  } catch {
+    ElMessage.error('恢复失败')
+  }
+}
+
+function handleSelectVersion(versionId: number) {
+  const version = revisionsStore.versions.find(v => v.id === versionId)
+  if (version) {
+    editorContent.value = version.content
+  }
+}
+
 watch(() => ppStore.foundation, (f) => {
   if (f) {
     foundationOutline.value = f.outline
@@ -234,6 +428,15 @@ async function saveBlueprint(bpId: number) {
 function getContextListLength(key: string) {
   const value = store.latestContext?.package_json[key]
   return Array.isArray(value) ? value.length : 0
+}
+
+// Source type label helper for internal revisions in timeline
+const sourceTypeLabel: Record<string, string> = {
+  planning_decision: '规划决策',
+  review_issue: '审查问题',
+  author_request: '作者请求',
+  manual_edit: '手动编辑',
+  restore: '恢复',
 }
 </script>
 
@@ -400,11 +603,41 @@ function getContextListLength(key: string) {
           <div v-if="activeRun.gate_result_json.reasons.length" class="writing__reasons">
             <p v-for="r in activeRun.gate_result_json.reasons" :key="r" class="writing__reason">{{ r }}</p>
           </div>
-          <pre class="writing__draft">{{ activeRun.draft_content.slice(0, 500) }}...</pre>
+
+          <!-- Phase 4: Editor buffer for current version content -->
+          <div class="writing__editor-area">
+            <el-input
+              v-model="editorContent"
+              type="textarea"
+              :rows="10"
+              :readonly="isReadOnly"
+              data-testid="draft-editor"
+            />
+            <div v-if="!isReadOnly" class="writing__editor-actions">
+              <el-input
+                v-model="editorChangeReason"
+                placeholder="编辑原因"
+                size="small"
+                class="writing__editor-reason"
+                data-testid="change-reason-input"
+              />
+              <el-button
+                type="primary"
+                size="small"
+                :disabled="!editorChangeReason.trim()"
+                :loading="revisionsStore.loading"
+                data-testid="save-manual-revision"
+                @click="handleSaveManualRevision"
+              >
+                保存
+              </el-button>
+            </div>
+          </div>
+
           <div class="writing__actions">
-            <el-button type="primary" @click="handleAcceptRun(activeRun.id)">接受到章节</el-button>
-            <el-button @click="handleDiscardRun(activeRun.id)">废弃</el-button>
-            <el-button @click="handleReviewRun(activeRun.id)">审查</el-button>
+            <el-button type="primary" :disabled="isReadOnly" @click="handleAcceptRun(activeRun.id)">接受到章节</el-button>
+            <el-button :disabled="isReadOnly" @click="handleDiscardRun(activeRun.id)">废弃</el-button>
+            <el-button :disabled="isReadOnly" @click="handleReviewRun(activeRun.id)">审查</el-button>
           </div>
           <div v-if="pendingCountAfterAccept > 0" class="writing__extraction-info">
             <el-tag type="warning" class="writing__pending-tag">
@@ -456,6 +689,119 @@ function getContextListLength(key: string) {
           @apply="handleApplyDraft"
         />
       </el-card>
+
+      <!-- Phase 4: Version Timeline & Revision panels -->
+      <el-card v-if="activeRun && (activeRun.status === 'completed' || activeRun.status === 'decision_required')" class="writing__section" shadow="never">
+        <template #header>
+          <span>版本与修订</span>
+        </template>
+        <div class="writing__phase4-grid">
+          <!-- Left: Timeline + History -->
+          <div class="writing__phase4-left">
+            <DraftVersionTimeline
+              :versions="revisionsStore.versions"
+              :current-version="revisionsStore.currentVersion"
+              @create-version="handleCreateVersion"
+              @restore="handleRestoreVersion"
+              @select-version="handleSelectVersion"
+            >
+              <template #internal-revisions>
+                <div
+                  v-for="rev in internalRevisions"
+                  :key="rev.id"
+                  class="writing__internal-rev"
+                >
+                  <span class="writing__internal-rev-seq">R{{ rev.sequence }}</span>
+                  <span class="writing__internal-rev-source">{{ sourceTypeLabel[rev.source_type] || rev.source_type }}</span>
+                  <span class="writing__internal-rev-reason">：{{ rev.reason }}</span>
+                </div>
+              </template>
+            </DraftVersionTimeline>
+
+            <el-divider />
+
+            <RevisionHistoryPanel :revisions="revisionsStore.revisions" />
+          </div>
+
+          <!-- Right: Issue panel + Candidate panel -->
+          <div class="writing__phase4-right">
+            <ReviewIssuePanel
+              :issues="revisionsStore.reviewIssues"
+              :selected-issue-id="revisionsStore.selectedIssueId"
+              :disabled="isReadOnly"
+              @generate-options="handleGenerateOptions"
+              @create-candidate="handleCreateCandidate"
+              @ignore="handleIgnoreIssue"
+            />
+
+            <el-divider v-if="revisionsStore.candidate" />
+
+            <RevisionCandidatePanel
+              v-if="revisionsStore.candidate"
+              :candidate="revisionsStore.candidate"
+              @apply="handleApplyCandidate"
+              @reject="handleRejectCandidate"
+            />
+          </div>
+        </div>
+      </el-card>
+
+      <!-- Force accept dialog -->
+      <el-dialog
+        v-model="showForceAcceptDialog"
+        title="强制接受"
+        width="400px"
+        :close-on-click-modal="false"
+      >
+        <el-alert type="warning" :closable="false" show-icon>
+          <template #title>
+            存在阻断问题
+          </template>
+          仍有 {{ blockingIssues.length }} 个阻断问题未解决，强制接受需要说明原因。
+        </el-alert>
+        <el-input
+          v-model="forceAcceptReason"
+          type="textarea"
+          :rows="2"
+          placeholder="请说明强制接受的原因"
+          class="writing__force-reason"
+        />
+        <template #footer>
+          <el-button @click="showForceAcceptDialog = false">取消</el-button>
+          <el-button
+            type="danger"
+            :disabled="!forceAcceptReason.trim()"
+            @click="handleForceAccept"
+          >
+            强制接受
+          </el-button>
+        </template>
+      </el-dialog>
+
+      <!-- Ignore issue dialog -->
+      <el-dialog
+        v-model="showIgnoreDialog"
+        title="忽略问题"
+        width="400px"
+        :close-on-click-modal="false"
+      >
+        <el-input
+          v-model="ignoreReason"
+          type="textarea"
+          :rows="2"
+          placeholder="请说明忽略此问题的原因"
+        />
+        <template #footer>
+          <el-button @click="showIgnoreDialog = false">取消</el-button>
+          <el-button
+            type="primary"
+            :disabled="!ignoreReason.trim()"
+            @click="confirmIgnoreIssue"
+          >
+            确认忽略
+          </el-button>
+        </template>
+      </el-dialog>
     </div>
   </div>
 </template>
@@ -500,6 +846,21 @@ function getContextListLength(key: string) {
   margin-bottom: 8px;
 }
 
+.writing__editor-area {
+  margin: 8px 0;
+}
+
+.writing__editor-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  align-items: center;
+}
+
+.writing__editor-reason {
+  flex: 1;
+}
+
 .writing__draft {
   background: #f5f7fa;
   padding: 12px;
@@ -533,5 +894,38 @@ function getContextListLength(key: string) {
 
 .writing__pending-tag {
   cursor: default;
+}
+
+.writing__phase4-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.writing__phase4-left,
+.writing__phase4-right {
+  min-width: 0;
+}
+
+.writing__internal-rev {
+  font-size: 12px;
+  color: #606266;
+  padding: 2px 0;
+}
+
+.writing__internal-rev-seq {
+  font-weight: 500;
+}
+
+.writing__internal-rev-source {
+  color: #909399;
+}
+
+.writing__internal-rev-reason {
+  color: #909399;
+}
+
+.writing__force-reason {
+  margin-top: 12px;
 }
 </style>

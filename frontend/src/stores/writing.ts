@@ -103,8 +103,8 @@ export const useWritingStore = defineStore('writing', () => {
     }
   }
 
-  async function acceptRun(novelId: number, runId: number) {
-    const result = await api.acceptWritingRun(novelId, runId)
+  async function acceptRun(novelId: number, runId: number, options?: { force_accept?: boolean; force_reason?: string }) {
+    const result = await api.acceptWritingRun(novelId, runId, options)
     writingRuns.value = writingRuns.value.map(r =>
       r.id === runId ? { ...r, status: 'accepted' as const } : r,
     )
