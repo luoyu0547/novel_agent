@@ -14,7 +14,7 @@ from app.ai.quality_gate import BaseQualityGateAgent, FakeQualityGateAgent, Deep
 from app.ai.service import BaseExtractionService, DeepSeekExtractionService
 from app.ai.writer import BaseWritingGenerator, DeepSeekWritingGenerator
 from app.services.quality_gate_service import QualityGateService
-from app.core.exceptions import NotFound, AppException
+from app.core.exceptions import BadRequest, NotFound, AppException
 from app.models.novel import Novel, Chapter
 from app.models.quality_gate import ReviewIssue
 from app.models.writing import NovelBlueprint, ChapterPlan, ChapterBrief, ContextPackage, WritingRun
@@ -438,6 +438,14 @@ class WritingService:
                 "status": "failed",
                 "error_message": str(e),
             })
+
+        # Ensure v1 DraftVersion after generation/expansion/quality-gate
+        # retry loops have finished (not inside a retry loop).
+        if run.status in ("completed", "decision_required") and run.draft_content:
+            from app.services.draft_version_service import DraftVersionService
+            dv_svc = DraftVersionService(self.db, self.user_id, self.novel_id)
+            await dv_svc.ensure_initial_version(run)
+
         await self.db.commit()
         return run
 
@@ -461,7 +469,12 @@ class WritingService:
         pending = await pending_repo.list_by_writing_run(run_id)
         return {"run": run, "repair_logs": logs, "pending_repairs": pending}
 
-    async def accept_writing_run(self, run_id: int):
+    async def accept_writing_run(
+        self,
+        run_id: int,
+        force_accept: bool = False,
+        force_reason: str | None = None,
+    ) -> tuple[Chapter, dict]:
         """接受草稿，写入章节正文或创建新章节。"""
         await self._ensure_owned_novel()
         run = await self.run_repo.get_by_id(run_id)
@@ -475,6 +488,37 @@ class WritingService:
             raise AppException("该写作运行存在规划阻塞，请先解决")
         if run.status != "completed":
             raise AppException("只能接受已完成的写作运行")
+
+        # Fetch current draft version
+        from app.repositories.draft_version_repo import DraftVersionRepo
+        dv_repo = DraftVersionRepo(self.db)
+        current_version = await dv_repo.get_current(run.id)
+
+        # Reject any current-version DraftRevision in candidate status
+        if current_version:
+            from app.models.plot_planning import DraftRevision as DR
+            candidate_stmt = select(DR).where(
+                DR.draft_version_id == current_version.id,
+                DR.status == "candidate",
+            )
+            candidate_result = await self.db.execute(candidate_stmt)
+            candidate_revisions = list(candidate_result.scalars().all())
+            if candidate_revisions:
+                raise AppException("当前版本存在待处理的候选修订，请先处理")
+
+        # Query open blocking ReviewIssues
+        issue_repo = ReviewIssueRepo(self.db)
+        blocking_issues = await issue_repo.list_open_blocking(run.id)
+
+        if blocking_issues:
+            if not force_accept:
+                raise AppException("存在阻塞问题，请先解决或强制接受")
+            if not force_reason:
+                raise BadRequest("强制接受必须填写原因")
+
+        # Copy DraftVersion content (NOT run.draft_content) to Chapter
+        content_to_write = current_version.content if current_version else run.draft_content
+
         if run.target_chapter_id:
             stmt = select(Chapter).where(Chapter.id == run.target_chapter_id)
             result = await self.db.execute(stmt)
@@ -483,7 +527,7 @@ class WritingService:
                 raise NotFound("目标章节不存在")
             if chapter.status == "locked":
                 raise AppException("已发布章节不可覆盖")
-            chapter.content = run.draft_content
+            chapter.content = content_to_write
         else:
             brief = await self.brief_repo.get_by_id(run.chapter_brief_id)
             plan = await self.plan_repo.get_by_id(brief.chapter_plan_id) if brief else None
@@ -491,15 +535,26 @@ class WritingService:
             chapter = Chapter(
                 novel_id=self.novel_id,
                 title=title,
-                content=run.draft_content,
+                content=content_to_write,
                 summary="",
                 status="draft",
             )
             self.db.add(chapter)
             await self.db.flush()
             run.target_chapter_id = chapter.id
+
+        # Mark run accepted
         run.status = "accepted"
         run.accepted_at = datetime.datetime.now()
+
+        # Mark version accepted; set chapter_id and override reason
+        if current_version:
+            current_version.status = "accepted"
+            current_version.chapter_id = chapter.id
+            if force_accept and force_reason:
+                current_version.acceptance_override_reason = force_reason
+            current_version.updated_at = datetime.datetime.now()
+
         await self.db.commit()
 
         extraction_result = {"pending_ids": [], "pending_count": 0, "error": None}
@@ -523,6 +578,12 @@ class WritingService:
         if run.status in ("accepted", "discarded"):
             raise AppException("该写作运行已处理")
         await self.run_repo.update(run, {"status": "discarded"})
+
+        # Mark current draft version as rejected
+        from app.services.draft_version_service import DraftVersionService
+        dv_svc = DraftVersionService(self.db, self.user_id, self.novel_id)
+        await dv_svc.mark_run_rejected(run)
+
         await self.db.commit()
 
     # ---- Draft Review (Task 5) ----

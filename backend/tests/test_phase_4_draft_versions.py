@@ -499,3 +499,391 @@ async def test_reject_revision_not_found(db):
     service = DraftVersionService(db, novel.user_id, novel.id)
     with pytest.raises(NotFound):
         await service.reject_revision(99999)
+
+
+# ── Integration: one v1 after multiple internal rewrites ──────────────
+
+
+class _CountingFakeGenerator:
+    """Fake generator that counts generate_draft calls and returns
+    incrementing content to simulate internal rewrites."""
+
+    def __init__(self):
+        self.generate_calls = 0
+
+    async def generate_blueprint(self, novel_data, author_input):
+        return {
+            "core_promise": "test",
+            "theme": "test",
+            "main_conflict": "test",
+            "character_arcs": "test",
+            "world_rules": "test",
+            "narrative_perspective": "test",
+            "style_constraints": "test",
+            "ending_direction": "test",
+        }
+
+    async def generate_chapter_plan(self, blueprint, novel_data):
+        return {
+            "chapter_title": "测试章节",
+            "plot_task": "测试",
+            "character_task": "测试",
+            "information_task": "测试",
+            "emotional_effect": "测试",
+            "pacing": "测试",
+            "foreshadowing_task": "测试",
+        }
+
+    async def generate_chapter_brief(self, chapter_plan, blueprint, length_contract):
+        return {
+            "writing_goal": "测试",
+            "scenes": [],
+            "participating_characters": "测试",
+            "conflict_design": "测试",
+            "information_control": "测试",
+            "foreshadowing_handling": "测试",
+            "writing_constraints": "测试",
+            "acceptance_criteria": "测试",
+        }
+
+    async def generate_draft(self, context_package):
+        self.generate_calls += 1
+        return f"第{self.generate_calls}次生成的草稿正文" + "内容" * 500
+
+
+class _RewritingFakeGateAgent:
+    """Fake gate agent that forces two rewrites then passes."""
+
+    def __init__(self, rewrites_before_pass=2):
+        self._call_count = 0
+        self._rewrites_before_pass = rewrites_before_pass
+
+    async def check(self, draft, brief, context_package):
+        self._call_count += 1
+        from app.ai.quality_gate import AGENT_TYPES, CheckResult
+
+        if self._call_count <= self._rewrites_before_pass:
+            # Return a full_rewrite result to trigger rewrite_needed
+            return [
+                CheckResult(
+                    passed=False,
+                    issue_type="length",
+                    severity="auto_fixable",
+                    fix_strategy="full_rewrite",
+                    fix_description="需要扩写",
+                )
+            ] + [
+                CheckResult(passed=True, issue_type=t, severity="auto_fixable")
+                for t in AGENT_TYPES
+                if t != "length"
+            ]
+        return [
+            CheckResult(passed=True, issue_type=t, severity="auto_fixable")
+            for t in AGENT_TYPES
+        ]
+
+
+@pytest.mark.asyncio
+async def test_one_v1_after_multiple_internal_rewrites(db):
+    """After multiple quality-gate rewrites, exactly one v1 is created."""
+    from app.services.writing_service import WritingService
+    from app.repositories.draft_version_repo import DraftVersionRepo
+
+    generator = _CountingFakeGenerator()
+    gate_agent = _RewritingFakeGateAgent(rewrites_before_pass=2)
+
+    # Build minimal FK chain
+    user = User(username="rewrite_tester", hashed_password="x")
+    db.add(user)
+    await db.flush()
+
+    novel = Novel(
+        title="重写测试",
+        description="",
+        genre="古风",
+        style_guide="第三人称",
+        user_id=user.id,
+    )
+    db.add(novel)
+    await db.flush()
+
+    _, cb, ctx = await _make_fk_chain(db, novel.id)
+
+    svc = WritingService(
+        db=db,
+        user_id=user.id,
+        novel_id=novel.id,
+        generator=generator,
+        gate_agent=gate_agent,
+    )
+    run = await svc.create_writing_run(cb.id)
+
+    assert run.status == "completed"
+    assert generator.generate_calls >= 3  # initial + 2 rewrites
+
+    versions = await DraftVersionRepo(db).list_by_run(run.id)
+    assert len(versions) == 1
+    assert versions[0].version == 1
+    assert versions[0].revision_sequence == 0
+
+
+# ── Integration: acceptance boundary tests ────────────────────────────
+
+
+async def _setup_accepted_run(db, draft_content="初稿正文"):
+    """Create a completed run with v1 DraftVersion, ready for accept testing."""
+    run, user, novel = await _make_minimal_run(db, draft_content=draft_content)
+
+    from app.services.draft_version_service import DraftVersionService
+    dv_svc = DraftVersionService(db, user.id, novel.id)
+    await dv_svc.ensure_initial_version(run)
+
+    return run, user, novel
+
+
+@pytest.mark.asyncio
+async def test_candidate_revision_blocks_accept_even_with_force(db):
+    """An open candidate DraftRevision blocks accept even with force_accept=true."""
+    run, user, novel = await _setup_accepted_run(db)
+
+    from app.repositories.draft_version_repo import DraftVersionRepo
+    from app.services.draft_version_service import DraftVersionService
+    from app.services.writing_service import WritingService
+    from app.models.plot_planning import DraftRevision
+
+    dv_repo = DraftVersionRepo(db)
+    current = await dv_repo.get_current(run.id)
+
+    # Create a candidate revision
+    candidate = await dv_repo.create_revision(
+        novel.id,
+        {
+            "writing_run_id": run.id,
+            "draft_version_id": current.id,
+            "sequence": 1,
+            "source_type": "manual_edit",
+            "base_revision_sequence": 0,
+            "base_content_hash": "abc",
+            "base_content": "旧",
+            "candidate_content": "新",
+            "patches_json": [],
+            "diff_json": {},
+            "scope_json": {"type": "manual"},
+            "reason": "测试候选",
+            "status": "candidate",
+        },
+    )
+    await db.commit()
+
+    svc = WritingService(db=db, user_id=user.id, novel_id=novel.id)
+    from app.core.exceptions import AppException
+
+    with pytest.raises(AppException, match="候选修订"):
+        await svc.accept_writing_run(
+            run.id, force_accept=True, force_reason="强制接受"
+        )
+
+
+@pytest.mark.asyncio
+async def test_blocking_issue_blocks_normal_accept(db):
+    """An open blocking ReviewIssue blocks normal accept."""
+    run, user, novel = await _setup_accepted_run(db)
+
+    from app.repositories.quality_gate_repo import ReviewIssueRepo
+    from app.services.writing_service import WritingService
+    from app.core.exceptions import AppException
+
+    issue_repo = ReviewIssueRepo(db)
+    await issue_repo.create(novel.id, run.id, {
+        "issue_type": "continuity",
+        "severity": "needs_intent",
+        "resolution_mode": "needs_intent",
+        "location": "段落3",
+        "description": "连续性问题",
+        "suggestion": "修复",
+        "acceptance_blocking": True,
+        "status": "open",
+    })
+    await db.commit()
+
+    svc = WritingService(db=db, user_id=user.id, novel_id=novel.id)
+    with pytest.raises(AppException, match="阻塞问题"):
+        await svc.accept_writing_run(run.id)
+
+
+@pytest.mark.asyncio
+async def test_force_accept_without_reason_raises_error(db):
+    """force_accept=true without a reason raises BadRequest."""
+    run, user, novel = await _setup_accepted_run(db)
+
+    from app.repositories.quality_gate_repo import ReviewIssueRepo
+    from app.services.writing_service import WritingService
+    from app.core.exceptions import BadRequest
+
+    issue_repo = ReviewIssueRepo(db)
+    await issue_repo.create(novel.id, run.id, {
+        "issue_type": "continuity",
+        "severity": "needs_intent",
+        "resolution_mode": "needs_intent",
+        "location": "段落3",
+        "description": "连续性问题",
+        "suggestion": "修复",
+        "acceptance_blocking": True,
+        "status": "open",
+    })
+    await db.commit()
+
+    svc = WritingService(db=db, user_id=user.id, novel_id=novel.id)
+    with pytest.raises(BadRequest, match="原因"):
+        await svc.accept_writing_run(run.id, force_accept=True, force_reason=None)
+
+
+@pytest.mark.asyncio
+async def test_force_accept_with_reason_stores_override(db):
+    """Force accept with a reason stores acceptance_override_reason on the version."""
+    run, user, novel = await _setup_accepted_run(db)
+
+    from app.repositories.quality_gate_repo import ReviewIssueRepo
+    from app.repositories.draft_version_repo import DraftVersionRepo
+    from app.services.writing_service import WritingService
+
+    issue_repo = ReviewIssueRepo(db)
+    await issue_repo.create(novel.id, run.id, {
+        "issue_type": "continuity",
+        "severity": "needs_intent",
+        "resolution_mode": "needs_intent",
+        "location": "段落3",
+        "description": "连续性问题",
+        "suggestion": "修复",
+        "acceptance_blocking": True,
+        "status": "open",
+    })
+    await db.commit()
+
+    svc = WritingService(db=db, user_id=user.id, novel_id=novel.id)
+    chapter, _ = await svc.accept_writing_run(
+        run.id, force_accept=True, force_reason="作者确认可接受"
+    )
+
+    dv_repo = DraftVersionRepo(db)
+    version = await dv_repo.get_current(run.id)
+    # After accept, the version status is "accepted" so get_current won't find it.
+    # Query directly.
+    from sqlalchemy import select
+    from app.models.draft_version import DraftVersion
+
+    stmt = select(DraftVersion).where(DraftVersion.writing_run_id == run.id)
+    result = await db.execute(stmt)
+    v = result.scalar_one()
+    assert v.acceptance_override_reason == "作者确认可接受"
+
+
+@pytest.mark.asyncio
+async def test_accept_writes_current_version_content_not_stale_run(db):
+    """Accept writes current DraftVersion content, not stale WritingRun.draft_content."""
+    run, user, novel = await _setup_accepted_run(db, draft_content="原始内容")
+
+    from app.repositories.draft_version_repo import DraftVersionRepo
+    from app.services.draft_version_service import DraftVersionService
+    from app.services.writing_service import WritingService
+
+    # Modify version content (simulating a manual revision)
+    dv_repo = DraftVersionRepo(db)
+    current = await dv_repo.get_current(run.id)
+    current.content = "修订后的内容"
+    run.draft_content = "旧的内容"  # Simulate stale run content
+    await db.commit()
+
+    svc = WritingService(db=db, user_id=user.id, novel_id=novel.id)
+    chapter, _ = await svc.accept_writing_run(run.id)
+
+    assert chapter.content == "修订后的内容"
+
+
+@pytest.mark.asyncio
+async def test_accepted_version_becomes_frozen_with_chapter_id(db):
+    """Accepted version becomes frozen with chapter_id."""
+    run, user, novel = await _setup_accepted_run(db)
+
+    from app.repositories.draft_version_repo import DraftVersionRepo
+    from app.services.writing_service import WritingService
+
+    svc = WritingService(db=db, user_id=user.id, novel_id=novel.id)
+    chapter, _ = await svc.accept_writing_run(run.id)
+
+    dv_repo = DraftVersionRepo(db)
+    # After accept, version status is "accepted" — query directly
+    from sqlalchemy import select
+    from app.models.draft_version import DraftVersion
+
+    stmt = select(DraftVersion).where(DraftVersion.writing_run_id == run.id)
+    result = await db.execute(stmt)
+    v = result.scalar_one()
+    assert v.status == "accepted"
+    assert v.chapter_id == chapter.id
+
+
+@pytest.mark.asyncio
+async def test_discard_marks_current_version_rejected(db):
+    """Discard marks the current version as rejected."""
+    run, user, novel = await _setup_accepted_run(db)
+
+    from app.services.writing_service import WritingService
+    from sqlalchemy import select
+    from app.models.draft_version import DraftVersion
+
+    svc = WritingService(db=db, user_id=user.id, novel_id=novel.id)
+    await svc.discard_writing_run(run.id)
+
+    stmt = select(DraftVersion).where(DraftVersion.writing_run_id == run.id)
+    result = await db.execute(stmt)
+    v = result.scalar_one()
+    assert v.status == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_accepted_run_rejects_phase4_writes(db):
+    """Accepted runs reject further Phase 4 writes (create_new_version)."""
+    run, user, novel = await _setup_accepted_run(db)
+
+    from app.services.writing_service import WritingService
+    from app.services.draft_version_service import DraftVersionService
+    from app.core.exceptions import BadRequest
+
+    svc = WritingService(db=db, user_id=user.id, novel_id=novel.id)
+    chapter, _ = await svc.accept_writing_run(run.id)
+
+    dv_svc = DraftVersionService(db, user.id, novel.id)
+    from sqlalchemy import select
+    from app.models.draft_version import DraftVersion
+
+    stmt = select(DraftVersion).where(DraftVersion.writing_run_id == run.id)
+    result = await db.execute(stmt)
+    v = result.scalar_one()
+
+    with pytest.raises(BadRequest, match="已接受"):
+        await dv_svc.create_new_version(run.id, v.id, "新版本")
+
+
+@pytest.mark.asyncio
+async def test_discarded_run_rejects_phase4_writes(db):
+    """Discarded runs reject further Phase 4 writes (create_new_version)."""
+    run, user, novel = await _setup_accepted_run(db)
+
+    from app.services.writing_service import WritingService
+    from app.services.draft_version_service import DraftVersionService
+    from app.core.exceptions import BadRequest
+
+    svc = WritingService(db=db, user_id=user.id, novel_id=novel.id)
+    await svc.discard_writing_run(run.id)
+
+    dv_svc = DraftVersionService(db, user.id, novel.id)
+    from sqlalchemy import select
+    from app.models.draft_version import DraftVersion
+
+    stmt = select(DraftVersion).where(DraftVersion.writing_run_id == run.id)
+    result = await db.execute(stmt)
+    v = result.scalar_one()
+
+    with pytest.raises(BadRequest, match="已接受或丢弃"):
+        await dv_svc.create_new_version(run.id, v.id, "新版本")

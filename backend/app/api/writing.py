@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -24,6 +25,7 @@ from app.schemas.writing import (
     PendingRepairOut,
     ResolveRepairRequest,
 )
+from app.schemas.revision import AcceptWritingRunRequest
 from app.services.writing_service import WritingService
 from app.services.repair_service import RepairService
 
@@ -213,11 +215,17 @@ async def get_writing_run(
 async def accept_writing_run(
     novel_id: int,
     run_id: int,
+    body: Optional[AcceptWritingRunRequest] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    req = body or AcceptWritingRunRequest()
     svc = _get_service(db, current_user, novel_id)
-    chapter, extraction = await svc.accept_writing_run(run_id)
+    chapter, extraction = await svc.accept_writing_run(
+        run_id,
+        force_accept=req.force_accept,
+        force_reason=req.force_reason,
+    )
     from app.schemas.novel import ChapterOut
     return ApiResponse.success(data={
         "chapter": ChapterOut.model_validate(chapter).model_dump(),
