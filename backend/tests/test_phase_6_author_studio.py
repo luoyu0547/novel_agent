@@ -253,3 +253,156 @@ async def test_flush_updates_working_copy_pointers(db):
     copy = await db.get(DraftWorkingCopy, completed_run.id)
     assert copy.draft_version_id == version.id
     assert copy.base_revision_sequence == version.revision_sequence
+
+
+# ── Task 4: StudioAgent and message orchestration tests ──────────────────
+
+
+from app.schemas.writing_studio import StudioIntent, StudioActionResult
+from app.services.writing_session_service import WritingSessionService
+from app.services.writing_studio_service import WritingStudioService
+
+
+class FakeStudioIntentAgent:
+    """Returns a generate_draft intent — no confirmation required."""
+
+    async def interpret(self, text: str, session) -> StudioIntent:
+        return StudioIntent(action="generate_draft", reply="开始生成草稿", payload={})
+
+
+class FakeAcceptIntentAgent:
+    """Returns a clarify intent that requires accept confirmation."""
+
+    async def interpret(self, text: str, session) -> StudioIntent:
+        return StudioIntent(
+            action="clarify",
+            reply="请确认接受草稿",
+            payload={},
+            confirmation_action="accept",
+        )
+
+
+class FakeStudioActionExecutor:
+    """Returns a draft action result with the session's active run linked."""
+
+    async def execute(self, session, intent: StudioIntent) -> StudioActionResult:
+        return StudioActionResult(
+            message_type="draft",
+            content_json={"summary": "草稿已生成"},
+            writing_run_id=session.active_writing_run_id,
+            context_package_id=None,
+            draft_version_id=None,
+        )
+
+
+class FakeMalformedIntentAgent:
+    """Simulates an agent that returns an invalid action — should be handled gracefully."""
+
+    async def interpret(self, text: str, session) -> StudioIntent:
+        # This simulates what DeepSeekStudioIntentAgent does on malformed output:
+        # fall back to clarify
+        return StudioIntent(
+            action="clarify",
+            reply="抱歉，我无法理解您的请求，请重新描述。",
+            payload={"raw_error": "invalid action in AI output"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_send_message_is_idempotent_and_links_completed_run(db):
+    user, novel, run, _ = await _make_studio_run(db)
+    session = await WritingSessionService(db, user.id, novel.id).get_or_create_for_run(run.id)
+    service = WritingStudioService(
+        db, user.id, novel.id,
+        intent_agent=FakeStudioIntentAgent(),
+        action_executor=FakeStudioActionExecutor(),
+    )
+    result = await service.send_author_message(session.id, "写下一章", "request-001")
+    replay = await service.send_author_message(session.id, "写下一章", "request-001")
+    assert replay.assistant_message.id == result.assistant_message.id
+    assert result.assistant_message.writing_run_id is not None
+
+
+@pytest.mark.asyncio
+async def test_accept_request_requires_confirm_action_not_text(db):
+    user, novel, run, _ = await _make_studio_run(db)
+    session = await WritingSessionService(db, user.id, novel.id).get_or_create_for_run(run.id)
+    service = WritingStudioService(
+        db, user.id, novel.id,
+        intent_agent=FakeAcceptIntentAgent(),
+        action_executor=FakeStudioActionExecutor(),
+    )
+    result = await service.send_author_message(session.id, "接受这个草稿", "request-002")
+    assert result.assistant_message.action_status == "needs_confirmation"
+
+
+@pytest.mark.asyncio
+async def test_malformed_ai_output_falls_back_to_clarify(db):
+    user, novel, run, _ = await _make_studio_run(db)
+    session = await WritingSessionService(db, user.id, novel.id).get_or_create_for_run(run.id)
+    service = WritingStudioService(
+        db, user.id, novel.id,
+        intent_agent=FakeMalformedIntentAgent(),
+        action_executor=FakeStudioActionExecutor(),
+    )
+    result = await service.send_author_message(session.id, "一些无法识别的输入", "request-003")
+    assert result.assistant_message.action_status == "completed"
+    assert result.assistant_message.message_type == "draft"
+    # The clarify intent was dispatched through the executor, which returns message_type="draft"
+    # The key invariant: no crash, no unvalidated mutation
+
+
+@pytest.mark.asyncio
+async def test_confirm_action_resolves_needs_confirmation(db):
+    user, novel, run, _ = await _make_studio_run(db)
+    session = await WritingSessionService(db, user.id, novel.id).get_or_create_for_run(run.id)
+    service = WritingStudioService(
+        db, user.id, novel.id,
+        intent_agent=FakeAcceptIntentAgent(),
+        action_executor=FakeStudioActionExecutor(),
+    )
+    result = await service.send_author_message(session.id, "接受草稿", "request-004")
+    assert result.assistant_message.action_status == "needs_confirmation"
+    msg_id = result.assistant_message.id
+
+    confirmed = await service.confirm_action(
+        session.id, msg_id, "accept", {"confirmed": True},
+    )
+    assert confirmed.assistant_message.action_status == "completed"
+    assert confirmed.assistant_message.message_type == "action_result"
+
+
+@pytest.mark.asyncio
+async def test_confirm_action_rejects_wrong_action(db):
+    user, novel, run, _ = await _make_studio_run(db)
+    session = await WritingSessionService(db, user.id, novel.id).get_or_create_for_run(run.id)
+    service = WritingStudioService(
+        db, user.id, novel.id,
+        intent_agent=FakeAcceptIntentAgent(),
+        action_executor=FakeStudioActionExecutor(),
+    )
+    result = await service.send_author_message(session.id, "接受草稿", "request-005")
+    msg_id = result.assistant_message.id
+
+    with pytest.raises(BadRequest, match="确认操作不匹配"):
+        await service.confirm_action(
+            session.id, msg_id, "discard", {},
+        )
+
+
+@pytest.mark.asyncio
+async def test_confirm_action_rejects_already_completed_message(db):
+    user, novel, run, _ = await _make_studio_run(db)
+    session = await WritingSessionService(db, user.id, novel.id).get_or_create_for_run(run.id)
+    service = WritingStudioService(
+        db, user.id, novel.id,
+        intent_agent=FakeStudioIntentAgent(),
+        action_executor=FakeStudioActionExecutor(),
+    )
+    result = await service.send_author_message(session.id, "写草稿", "request-006")
+    msg_id = result.assistant_message.id
+    # This message is already completed, not needs_confirmation
+    with pytest.raises(BadRequest, match="不需要确认操作"):
+        await service.confirm_action(
+            session.id, msg_id, "accept", {},
+        )

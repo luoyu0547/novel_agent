@@ -5,6 +5,33 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+# ── AI intent protocol models ────────────────────────────────────────────
+
+StudioAction = Literal[
+    "clarify", "generate_plan", "generate_brief", "generate_context",
+    "generate_draft", "review_draft", "propose_revision", "explain_sources",
+]
+
+ConfirmationAction = Literal[
+    "accept", "discard", "apply_revision", "force_accept", "restore_version",
+]
+
+
+class StudioIntent(BaseModel):
+    action: StudioAction
+    reply: str
+    payload: dict = Field(default_factory=dict)
+    confirmation_action: ConfirmationAction | None = None
+
+
+class StudioActionResult(BaseModel):
+    message_type: str
+    content_json: dict
+    writing_run_id: int | None = None
+    context_package_id: int | None = None
+    draft_version_id: int | None = None
+
+
 # ── Request models ─────────────────────────────────────────────────────
 
 
