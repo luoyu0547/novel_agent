@@ -4,7 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novels'
 import { useWritingStudioStore } from '@/stores/writingStudio'
 import StudioChapterExplorer from '@/components/studio/StudioChapterExplorer.vue'
-import type { WritingSession } from '@/types/writingStudio'
+import StudioDocumentPane from '@/components/studio/StudioDocumentPane.vue'
+import StudioVersionInspector from '@/components/studio/StudioVersionInspector.vue'
+import type { WritingSession, StudioDocument } from '@/types/writingStudio'
 
 const route = useRoute()
 const router = useRouter()
@@ -19,6 +21,9 @@ const rightPaneVisible = ref(true)
 const selectedChapterId = ref<number | null>(null)
 const selectedSessionId = ref<number | null>(null)
 
+// Version inspector drawer
+const versionInspectorVisible = ref(false)
+
 // Chapters from novel store
 const chapters = computed(() => novelStore.currentNovel?.chapters || [])
 
@@ -28,6 +33,26 @@ const sessions = computed<WritingSession[]>(() => {
     return [studioStore.session]
   }
   return []
+})
+
+// Active document for the center pane
+const activeDocument = computed<StudioDocument | null>(() => {
+  if (selectedSessionId.value && studioStore.document) {
+    return studioStore.document
+  }
+  if (selectedChapterId.value) {
+    const chapter = chapters.value.find(c => c.id === selectedChapterId.value)
+    if (chapter) {
+      return {
+        kind: 'chapter' as const,
+        chapterId: chapter.id,
+        title: chapter.title,
+        content: chapter.content,
+        baseRevisionSequence: 0,
+      }
+    }
+  }
+  return null
 })
 
 // Handle explorer selection
@@ -96,6 +121,46 @@ function toggleRightPane() {
   rightPaneVisible.value = !rightPaneVisible.value
 }
 
+// Document pane event handlers
+function handleUpdateTitle(value: string) {
+  if (studioStore.document) {
+    studioStore.document.title = value
+  }
+}
+
+function handleUpdateContent(value: string) {
+  if (studioStore.document) {
+    studioStore.document.content = value
+  }
+}
+
+async function handleSaveWorkingCopy(payload: { title: string; content: string; baseRevisionSequence: number }) {
+  if (studioStore.document) {
+    // Sync the latest values before saving
+    studioStore.document.title = payload.title
+    studioStore.document.content = payload.content
+    try {
+      await studioStore.saveWorkingCopy(novelId.value)
+    } catch {
+      // Error state is handled by the store's saveState
+    }
+  }
+}
+
+function handleAccept() {
+  // Delegate to store confirmAction with 'accept'
+  // This will be wired up fully when the assistant panel is built
+}
+
+function handleDiscard() {
+  // Delegate to store confirmAction with 'discard'
+  // This will be wired up fully when the assistant panel is built
+}
+
+function handleOpenVersionInspector() {
+  versionInspectorVisible.value = true
+}
+
 defineExpose({ toggleLeftPane, toggleRightPane })
 </script>
 
@@ -147,19 +212,18 @@ defineExpose({ toggleLeftPane, toggleRightPane })
         />
       </aside>
 
-      <!-- Center pane: Editor / content area -->
+      <!-- Center pane: Document editor -->
       <main class="studio__center-pane" data-testid="studio-center-pane">
-        <div class="studio__editor-placeholder">
-          <template v-if="selectedChapterId">
-            <p>章节 ID: {{ selectedChapterId }}</p>
-          </template>
-          <template v-else-if="selectedSessionId">
-            <p>会话 ID: {{ selectedSessionId }}</p>
-          </template>
-          <template v-else>
-            <p>选择章节或草稿开始创作</p>
-          </template>
-        </div>
+        <StudioDocumentPane
+          :document="activeDocument"
+          :save-state="studioStore.saveState"
+          @update:title="handleUpdateTitle"
+          @update:content="handleUpdateContent"
+          @save-working-copy="handleSaveWorkingCopy"
+          @accept="handleAccept"
+          @discard="handleDiscard"
+          @open-version-inspector="handleOpenVersionInspector"
+        />
       </main>
 
       <!-- Right pane: Assistant / context panel -->
@@ -198,6 +262,17 @@ defineExpose({ toggleLeftPane, toggleRightPane })
         <p>助手面板</p>
       </div>
     </el-drawer>
+
+    <!-- Version inspector drawer -->
+    <StudioVersionInspector
+      v-model="versionInspectorVisible"
+      :versions="[]"
+      :current-version="null"
+      :revisions="[]"
+      :issues="[]"
+      :candidate="null"
+      :selected-issue-id="null"
+    />
   </div>
 </template>
 
