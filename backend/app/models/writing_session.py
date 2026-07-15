@@ -1,7 +1,6 @@
 """Phase 6 Author Studio — WritingSession, WritingMessage, DraftWorkingCopy models."""
 
 import datetime
-from typing import Optional
 
 from sqlalchemy import ForeignKey, Integer, JSON, Text
 from sqlalchemy.orm import Mapped, mapped_column
