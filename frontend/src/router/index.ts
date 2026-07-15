@@ -17,7 +17,10 @@ const router = createRouter({
         { path: 'novels/:id/writing', name: 'writing-workspace', component: () => import('@/views/novels/WritingWorkspaceView.vue'), meta: { auth: true } },
       ],
     },
-    { path: '/novels/:id/edit/:chapterId', name: 'editor', component: () => import('@/views/editor/EditorView.vue'), meta: { auth: true } },
+    // Studio route — full-screen, outside AppLayout
+    { path: '/novels/:id/studio', name: 'studio', component: () => import('@/views/studio/StudioView.vue'), meta: { auth: true } },
+    // Legacy editor route redirects to Studio
+    { path: '/novels/:id/edit/:chapterId', redirect: to => ({ name: 'studio', query: { chapter_id: String(to.params.chapterId) } }) },
     { path: '/login', name: 'login', component: () => import('@/views/auth/LoginView.vue'), meta: { guest: true } },
     { path: '/register', name: 'register', component: () => import('@/views/auth/RegisterView.vue'), meta: { guest: true } },
   ],

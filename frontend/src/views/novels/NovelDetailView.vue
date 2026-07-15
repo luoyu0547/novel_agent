@@ -57,7 +57,7 @@ function confirmDeleteChapter(chapterId: number) {
 }
 
 function goEdit() {
-  if (selectedChapterId.value) router.push(`/novels/${novelId.value}/edit/${selectedChapterId.value}`)
+  if (selectedChapterId.value) router.push({ name: 'studio', query: { chapter_id: String(selectedChapterId.value) } })
 }
 </script>
 <template>

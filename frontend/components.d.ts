@@ -30,6 +30,7 @@ declare module 'vue' {
     ElDescriptionsItem: typeof import('element-plus/es')['ElDescriptionsItem']
     ElDialog: typeof import('element-plus/es')['ElDialog']
     ElDivider: typeof import('element-plus/es')['ElDivider']
+    ElDrawer: typeof import('element-plus/es')['ElDrawer']
     ElEmpty: typeof import('element-plus/es')['ElEmpty']
     ElForm: typeof import('element-plus/es')['ElForm']
     ElFormItem: typeof import('element-plus/es')['ElFormItem']
@@ -62,6 +63,7 @@ declare module 'vue' {
     RevisionHistoryPanel: typeof import('./src/components/writing/RevisionHistoryPanel.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    StudioChapterExplorer: typeof import('./src/components/studio/StudioChapterExplorer.vue')['default']
     WritingEditor: typeof import('./src/components/editor/WritingEditor.vue')['default']
   }
   export interface GlobalDirectives {
@@ -89,6 +91,7 @@ declare global {
   const ElDescriptionsItem: typeof import('element-plus/es')['ElDescriptionsItem']
   const ElDialog: typeof import('element-plus/es')['ElDialog']
   const ElDivider: typeof import('element-plus/es')['ElDivider']
+  const ElDrawer: typeof import('element-plus/es')['ElDrawer']
   const ElEmpty: typeof import('element-plus/es')['ElEmpty']
   const ElForm: typeof import('element-plus/es')['ElForm']
   const ElFormItem: typeof import('element-plus/es')['ElFormItem']
@@ -121,5 +124,6 @@ declare global {
   const RevisionHistoryPanel: typeof import('./src/components/writing/RevisionHistoryPanel.vue')['default']
   const RouterLink: typeof import('vue-router')['RouterLink']
   const RouterView: typeof import('vue-router')['RouterView']
+  const StudioChapterExplorer: typeof import('./src/components/studio/StudioChapterExplorer.vue')['default']
   const WritingEditor: typeof import('./src/components/editor/WritingEditor.vue')['default']
 }
