@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.core.exceptions import NotFound
+from app.core.exceptions import BadRequest, NotFound
 from app.models.novel import Novel
 from app.models.user import User
 from app.models.writing import ChapterBrief, ChapterPlan, ContextPackage, WritingRun
@@ -169,3 +169,87 @@ async def test_to_workspace_out_includes_messages_and_working_copy(db):
     assert len(workspace["messages"]) == 1
     assert workspace["working_copy"] is not None
     assert workspace["working_copy"]["title"] == "第十八章"
+
+
+# ── Task 3: WorkingCopy autosave and flush tests ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_flush_turns_changed_working_copy_into_one_manual_revision(db):
+    from app.repositories.draft_version_repo import DraftVersionRepo
+    from app.services.working_copy_service import WorkingCopyService
+
+    user, novel, completed_run, draft_version = await _make_studio_run(db)
+    service = WorkingCopyService(db, user.id, novel.id)
+    await service.save(completed_run.id, "雨夜账册", "作者改过的正文", 0)
+    version = await service.flush(completed_run.id)
+    assert version.content == "作者改过的正文"
+    revisions = await DraftVersionRepo(db).list_revisions(version.id)
+    assert [r.source_type for r in revisions] == ["manual_edit"]
+
+
+@pytest.mark.asyncio
+async def test_stale_working_copy_does_not_overwrite_new_revision(db):
+    from app.services.working_copy_service import WorkingCopyService
+
+    user, novel, completed_run, _ = await _make_studio_run(db)
+    service = WorkingCopyService(db, user.id, novel.id)
+    with pytest.raises(BadRequest, match="基础修订序列已过期"):
+        await service.save(completed_run.id, "标题", "冲突正文", 99)
+
+
+@pytest.mark.asyncio
+async def test_flush_noop_when_content_unchanged(db):
+    from app.services.working_copy_service import WorkingCopyService
+
+    user, novel, completed_run, draft_version = await _make_studio_run(db)
+    service = WorkingCopyService(db, user.id, novel.id)
+    # Save working copy with same content as the version
+    await service.save(completed_run.id, "原标题", draft_version.content, 0)
+    version = await service.flush(completed_run.id)
+    # Should return the same version without creating a revision
+    assert version.content == draft_version.content
+    from app.repositories.draft_version_repo import DraftVersionRepo
+    revisions = await DraftVersionRepo(db).list_revisions(version.id)
+    assert len(revisions) == 0
+
+
+@pytest.mark.asyncio
+async def test_save_creates_working_copy_on_first_call(db):
+    from app.models.writing_session import DraftWorkingCopy
+    from app.services.working_copy_service import WorkingCopyService
+
+    user, novel, completed_run, draft_version = await _make_studio_run(db)
+    service = WorkingCopyService(db, user.id, novel.id)
+    copy = await service.save(completed_run.id, "新标题", "新正文", 0)
+    assert copy.writing_run_id == completed_run.id
+    assert copy.title == "新标题"
+    assert copy.content == "新正文"
+    assert copy.base_revision_sequence == 0
+
+
+@pytest.mark.asyncio
+async def test_save_updates_existing_working_copy(db):
+    from app.services.working_copy_service import WorkingCopyService
+
+    user, novel, completed_run, draft_version = await _make_studio_run(db)
+    service = WorkingCopyService(db, user.id, novel.id)
+    first = await service.save(completed_run.id, "标题一", "正文一", 0)
+    second = await service.save(completed_run.id, "标题二", "正文二", 0)
+    assert first.writing_run_id == second.writing_run_id
+    assert second.title == "标题二"
+    assert second.content == "正文二"
+
+
+@pytest.mark.asyncio
+async def test_flush_updates_working_copy_pointers(db):
+    from app.models.writing_session import DraftWorkingCopy
+    from app.services.working_copy_service import WorkingCopyService
+
+    user, novel, completed_run, draft_version = await _make_studio_run(db)
+    service = WorkingCopyService(db, user.id, novel.id)
+    await service.save(completed_run.id, "标题", "修改后的正文", 0)
+    version = await service.flush(completed_run.id)
+    copy = await db.get(DraftWorkingCopy, completed_run.id)
+    assert copy.draft_version_id == version.id
+    assert copy.base_revision_sequence == version.revision_sequence
