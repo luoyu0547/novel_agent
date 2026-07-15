@@ -50,7 +50,7 @@ class WritingSessionService:
         self, target_chapter_id: int | None, title: str
     ) -> WritingSession:
         await self._ensure_owned_novel()
-        return await self.repo.create(
+        session = await self.repo.create(
             self.novel_id,
             {
                 "target_chapter_id": target_chapter_id,
@@ -58,6 +58,8 @@ class WritingSessionService:
                 "status": "active",
             },
         )
+        await self.db.commit()
+        return session
 
     async def get_session(self, session_id: int) -> WritingSession:
         session = await self.repo.get(session_id, self.novel_id)

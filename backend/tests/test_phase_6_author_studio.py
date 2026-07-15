@@ -1,8 +1,11 @@
-"""Phase 6 Author Studio — persistence tests."""
+"""Phase 6 Author Studio — persistence and API tests."""
 
 import pytest
+from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import BadRequest, NotFound
+from app.core.security import create_token
 from app.models.novel import Novel
 from app.models.user import User
 from app.models.writing import ChapterBrief, ChapterPlan, ContextPackage, WritingRun
@@ -406,3 +409,146 @@ async def test_confirm_action_rejects_already_completed_message(db):
         await service.confirm_action(
             session.id, msg_id, "accept", {},
         )
+
+
+# ── Task 5: Studio REST API integration tests ───────────────────────────
+
+
+@pytest.fixture
+def studio_override():
+    """Override get_studio_service with a fake intent agent for API tests.
+
+    This prevents real DeepSeek API calls during test execution.
+    The override must match the original dependency's parameter signature
+    so FastAPI can resolve sub-dependencies correctly.
+    """
+    from app.api.writing_studio import get_studio_service
+    from app.core.database import get_db
+    from app.core.security import get_current_user
+    from app.main import app
+
+    fake_intent = FakeStudioIntentAgent()
+    fake_executor = FakeStudioActionExecutor()
+
+    def _fake_studio_service(
+        novel_id: int,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        return WritingStudioService(
+            db, current_user.id, novel_id,
+            intent_agent=fake_intent,
+            action_executor=fake_executor,
+        )
+
+    app.dependency_overrides[get_studio_service] = _fake_studio_service
+    yield
+    app.dependency_overrides.pop(get_studio_service, None)
+
+
+@pytest.mark.asyncio
+async def test_session_api_restores_messages_working_copy_and_sources(client, db, studio_override):
+    user, novel, completed_run, _ = await _make_studio_run(db)
+    await db.commit()
+    headers = {"Authorization": f"Bearer {create_token({'user_id': user.id})}"}
+    created = await client.post(
+        f"/api/v1/novels/{novel.id}/writing-sessions",
+        headers=headers, json={"title": "第十八章"},
+    )
+    assert created.json()["code"] == 0
+    session_id = created.json()["data"]["id"]
+
+    message = await client.post(
+        f"/api/v1/novels/{novel.id}/writing-sessions/{session_id}/messages",
+        headers=headers, json={"text": "解释本次来源", "idempotency_key": "api-001"},
+    )
+    assert message.json()["code"] == 0
+
+    restored = await client.get(
+        f"/api/v1/novels/{novel.id}/writing-sessions/{session_id}",
+        headers=headers,
+    )
+    assert restored.json()["code"] == 0
+    assert restored.json()["data"]["messages"]
+
+    sources = await client.get(
+        f"/api/v1/novels/{novel.id}/writing-runs/{completed_run.id}/sources",
+        headers=headers,
+    )
+    assert sources.json()["code"] == 0
+    assert sources.json()["data"] == completed_run.context_snapshot_json["source_items"]
+
+
+@pytest.mark.asyncio
+async def test_session_api_list_sessions(client, db, studio_override):
+    user, novel, _, _ = await _make_studio_run(db)
+    await db.commit()
+    headers = {"Authorization": f"Bearer {create_token({'user_id': user.id})}"}
+    await client.post(
+        f"/api/v1/novels/{novel.id}/writing-sessions",
+        headers=headers, json={"title": "会话 A"},
+    )
+    await client.post(
+        f"/api/v1/novels/{novel.id}/writing-sessions",
+        headers=headers, json={"title": "会话 B"},
+    )
+    resp = await client.get(
+        f"/api/v1/novels/{novel.id}/writing-sessions",
+        headers=headers,
+    )
+    assert resp.json()["code"] == 0
+    assert len(resp.json()["data"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_session_api_save_working_copy(client, db, studio_override):
+    user, novel, completed_run, draft_version = await _make_studio_run(db)
+    await db.commit()
+    headers = {"Authorization": f"Bearer {create_token({'user_id': user.id})}"}
+    # Create a session with an active writing run
+    created = await client.post(
+        f"/api/v1/novels/{novel.id}/writing-sessions",
+        headers=headers, json={"title": "编辑会话"},
+    )
+    session_id = created.json()["data"]["id"]
+    # Link the run to the session
+    from app.models.writing_session import WritingSession
+    session = await db.get(WritingSession, session_id)
+    session.active_writing_run_id = completed_run.id
+    await db.commit()
+
+    resp = await client.put(
+        f"/api/v1/novels/{novel.id}/writing-sessions/{session_id}/working-copy",
+        headers=headers, json={"title": "修改标题", "content": "修改正文", "base_revision_sequence": 0},
+    )
+    assert resp.json()["code"] == 0
+    assert resp.json()["data"]["title"] == "修改标题"
+    assert resp.json()["data"]["content"] == "修改正文"
+
+
+@pytest.mark.asyncio
+async def test_session_api_save_working_copy_rejects_no_active_run(client, db, studio_override):
+    user, novel, _, _ = await _make_studio_run(db)
+    await db.commit()
+    headers = {"Authorization": f"Bearer {create_token({'user_id': user.id})}"}
+    created = await client.post(
+        f"/api/v1/novels/{novel.id}/writing-sessions",
+        headers=headers, json={"title": "空会话"},
+    )
+    session_id = created.json()["data"]["id"]
+
+    resp = await client.put(
+        f"/api/v1/novels/{novel.id}/writing-sessions/{session_id}/working-copy",
+        headers=headers, json={"title": "标题", "content": "正文", "base_revision_sequence": 0},
+    )
+    assert resp.json()["code"] != 0
+
+
+@pytest.mark.asyncio
+async def test_session_api_unauthorized_returns_401(client, db, studio_override):
+    user, novel, _, _ = await _make_studio_run(db)
+    await db.commit()
+    resp = await client.get(
+        f"/api/v1/novels/{novel.id}/writing-sessions",
+    )
+    assert resp.status_code == 401

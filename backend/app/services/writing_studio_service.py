@@ -14,6 +14,7 @@ Key invariants:
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.studio_agent import DeepSeekStudioIntentAgent, StudioActionExecutor
 from app.core.exceptions import BadRequest, NotFound
 from app.models.writing_session import WritingMessage, WritingSession
 from app.repositories.writing_session_repo import WritingSessionRepo
@@ -45,7 +46,7 @@ class WritingStudioService:
         self.session_service = WritingSessionService(db, user_id, novel_id)
         self.working_copy_service = WorkingCopyService(db, user_id, novel_id)
         self.session_repo = WritingSessionRepo(db)
-        self.intent_agent = intent_agent
+        self.intent_agent = intent_agent or DeepSeekStudioIntentAgent()
         self.action_executor = action_executor
 
     # ── Private helpers ──────────────────────────────────────────────
