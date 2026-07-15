@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import User, Novel, Chapter, CharacterProfile, WorldSetting  # noqa: F401 — register models on Base
 from app.models import PendingMemory, PlotFact, Foreshadowing  # noqa: F401 — register models on Base
+from app.models import WritingSession, WritingMessage, DraftWorkingCopy  # noqa: F401 — register models on Base
 from app.api import auth, memory, novels, planning, revisions, writing
 from app.ai import router as ai_router
 from app.core.config import settings

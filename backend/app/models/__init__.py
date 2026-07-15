@@ -15,6 +15,7 @@ from app.models.plot_planning import (
 from app.models.quality_gate import ReviewIssue
 from app.models.user import User
 from app.models.writing import NovelBlueprint, ChapterPlan, ChapterBrief, ContextPackage, WritingRun, RepairLog, PendingRepair
+from app.models.writing_session import DraftWorkingCopy, WritingMessage, WritingSession
 
 __all__ = [
     "User", "Novel", "Chapter",
@@ -26,4 +27,5 @@ __all__ = [
     "AuthorFoundation", "AuthorFoundationRevision", "PlotUnit",
     "PlotPlanRevision", "PlanningDecision", "DraftRevision",
     "DraftVersion",
+    "WritingSession", "WritingMessage", "DraftWorkingCopy",
 ]
