@@ -14,7 +14,7 @@ const router = createRouter({
         { path: 'novels/:id/characters', name: 'novel-characters', component: () => import('@/views/novels/CharacterListView.vue'), meta: { auth: true } },
         { path: 'novels/:id/settings', name: 'novel-settings', component: () => import('@/views/novels/WorldSettingsView.vue'), meta: { auth: true } },
         { path: 'novels/:id/pending', name: 'novel-pending', component: () => import('@/views/novels/PendingConfirmView.vue'), meta: { auth: true } },
-        { path: 'novels/:id/writing', name: 'writing-workspace', component: () => import('@/views/novels/WritingWorkspaceView.vue'), meta: { auth: true } },
+        { path: 'novels/:id/writing', redirect: to => ({ name: 'studio', params: { id: to.params.id } }) },
       ],
     },
     // Studio route — full-screen, outside AppLayout

@@ -19,7 +19,6 @@ const tabs = computed(() => [
   { label: '角色', path: `/novels/${props.novelId}/characters` },
   { label: '设定', path: `/novels/${props.novelId}/settings` },
   { label: '待确认', path: `/novels/${props.novelId}/pending`, badge: pendingBadge.value },
-  { label: '写作', path: `/novels/${props.novelId}/writing` },
   { label: '创作工坊', path: `/novels/${props.novelId}/studio` },
 ])
 

@@ -53,3 +53,14 @@ export interface StudioMessageResult {
   assistant_message: WritingMessage
   workspace: StudioWorkspace
 }
+
+export interface StudioSource {
+  id: number
+  writing_run_id: number
+  title: string
+  preview: string
+  inclusion_reason: string
+  relevance_score: number
+  source_type: string
+  diagnostics: Record<string, unknown> | null
+}

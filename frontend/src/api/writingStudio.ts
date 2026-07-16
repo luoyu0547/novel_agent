@@ -1,5 +1,5 @@
 import client from './client'
-import type { StudioWorkspace, StudioMessageResult, StudioConfirmationAction, DraftWorkingCopy } from '@/types/writingStudio'
+import type { StudioWorkspace, StudioMessageResult, StudioConfirmationAction, DraftWorkingCopy, StudioSource } from '@/types/writingStudio'
 
 export function getStudioSession(novelId: number, sessionId: number): Promise<StudioWorkspace> {
   return client.get(`/novels/${novelId}/writing-sessions/${sessionId}`)
@@ -28,4 +28,11 @@ export function saveStudioWorkingCopy(
   body: { title: string; content: string; base_revision_sequence: number },
 ): Promise<DraftWorkingCopy> {
   return client.put(`/novels/${novelId}/writing-sessions/${sessionId}/working-copy`, body)
+}
+
+export function getRunSources(
+  novelId: number,
+  writingRunId: number,
+): Promise<StudioSource[]> {
+  return client.get(`/novels/${novelId}/writing-runs/${writingRunId}/sources`)
 }
