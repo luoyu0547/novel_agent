@@ -120,6 +120,11 @@ def _preview(text: str, max_len: int = 100) -> str:
     return text[:max_len] + "…"
 
 
+def _cjk_count(text: str) -> int:
+    """Count Chinese characters in text."""
+    return sum(1 for ch in text if "一" <= ch <= "鿿" or "㐀" <= ch <= "䶿")
+
+
 def _split_scenes(content: str) -> list[str]:
     """Split chapter content by blank-line boundaries into scene chunks.
 
@@ -127,6 +132,10 @@ def _split_scenes(content: str) -> list[str]:
     :data:`_MAX_SCENE_CHARS` Chinese characters, it is further split and
     the final :data:`_CARRY_OVER_CHARS` characters are carried into the
     next chunk for context continuity.
+
+    Single paragraphs that exceed ``_MAX_SCENE_CHARS`` are split at the
+    700-char boundary with 120-char carry-over, continuing until all
+    chunks are under the limit.
     """
     # Split on one or more blank lines — each block is a scene
     blocks = re.split(r"\n\s*\n", content)
@@ -139,38 +148,62 @@ def _split_scenes(content: str) -> list[str]:
 
     for block in blocks:
         # Count Chinese characters in this block
-        cjk_count = sum(1 for ch in block if "一" <= ch <= "鿿" or "㐀" <= ch <= "䶿")
-
-        if cjk_count <= _MAX_SCENE_CHARS:
+        if _cjk_count(block) <= _MAX_SCENE_CHARS:
             # Block fits in a single chunk
             chunks.append(block)
-        else:
-            # Block is too long — split by paragraphs within the block
-            paragraphs = [p.strip() for p in block.split("\n") if p.strip()]
-            carry = ""
-            current = ""
+            continue
 
-            for para in paragraphs:
-                candidate = (carry + para) if carry else ((current + "\n" + para) if current else para)
-                candidate = candidate.strip()
-                cjk = sum(1 for ch in candidate if "一" <= ch <= "鿿" or "㐀" <= ch <= "䶿")
+        # Block is too long — split by paragraphs within the block
+        paragraphs = [p.strip() for p in block.split("\n") if p.strip()]
+        carry = ""
+        current = ""
 
-                if cjk > _MAX_SCENE_CHARS and not current:
-                    # Single paragraph exceeds limit — emit it and carry tail
-                    chunks.append(candidate)
-                    carry = candidate[-_CARRY_OVER_CHARS:]
-                    current = ""
-                elif cjk > _MAX_SCENE_CHARS:
-                    # Current + para exceeds — emit current, start new with carry + para
+        for para in paragraphs:
+            candidate = (carry + para) if carry else ((current + "\n" + para) if current else para)
+            candidate = candidate.strip()
+            cjk = _cjk_count(candidate)
+
+            if cjk <= _MAX_SCENE_CHARS:
+                # Fits — absorb into current
+                current = candidate
+                carry = ""
+            elif not current:
+                # Single paragraph exceeds limit — split at boundary with carry-over
+                # Keep splitting the paragraph until the remainder fits
+                remaining = candidate
+                while _cjk_count(remaining) > _MAX_SCENE_CHARS:
+                    # Find the split position at _MAX_SCENE_CHARS CJK chars
+                    cjk_seen = 0
+                    split_pos = 0
+                    for i, ch in enumerate(remaining):
+                        if "一" <= ch <= "鿿" or "㐀" <= ch <= "䶿":
+                            cjk_seen += 1
+                        if cjk_seen == _MAX_SCENE_CHARS:
+                            split_pos = i + 1
+                            break
+                    # Emit the chunk up to split_pos
+                    chunks.append(remaining[:split_pos])
+                    # Carry the last _CARRY_OVER_CHARS chars into the next chunk
+                    carry_start = max(0, split_pos - _CARRY_OVER_CHARS)
+                    remaining = remaining[carry_start:]
+                # Whatever remains fits in one chunk
+                current = remaining
+                carry = ""
+            else:
+                # Current + para exceeds — emit current, start new with carry + para
+                chunks.append(current)
+                carry = current[-_CARRY_OVER_CHARS:]
+                current = (carry + "\n" + para).strip() if "\n" in current else (carry + para).strip()
+                carry = ""
+                # If the combined carry+para still exceeds, split the para portion
+                if _cjk_count(current) > _MAX_SCENE_CHARS:
                     chunks.append(current)
                     carry = current[-_CARRY_OVER_CHARS:]
-                    current = (carry + para).strip()
+                    current = ""
                     carry = ""
-                else:
-                    current = candidate
 
-            if current:
-                chunks.append(current)
+        if current:
+            chunks.append(current)
 
     return chunks
 

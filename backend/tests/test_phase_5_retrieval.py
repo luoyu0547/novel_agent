@@ -781,6 +781,46 @@ async def test_source_builder_scene_chunking_combines_paragraphs(db):
 
 
 @pytest.mark.asyncio
+async def test_source_builder_carry_over_appears_at_start_of_next_chunk(db):
+    """When combining paragraphs exceeds 700 CJK chars, the final 120 chars
+    of the emitted chunk should appear at the start of the next chunk."""
+    from app.retrieval.source_builder import _split_scenes, _CARRY_OVER_CHARS, _MAX_SCENE_CHARS
+
+    # Build a block with two paragraphs: first is near the limit, second pushes over
+    # Use CJK characters to ensure counting works
+    para1 = "一" * 650  # 650 CJK chars — under limit
+    para2 = "二" * 200  # 200 more CJK chars — combined exceeds 700
+    content = para1 + "\n" + para2
+
+    chunks = _split_scenes(content)
+    assert len(chunks) >= 2, f"Expected at least 2 chunks, got {len(chunks)}"
+    # The carry-over (last 120 chars of first chunk) should appear at the start of the second chunk
+    first_chunk_tail = chunks[0][-_CARRY_OVER_CHARS:]
+    assert chunks[1].startswith(first_chunk_tail), (
+        f"Carry-over mismatch: first chunk tail is {first_chunk_tail!r}, "
+        f"second chunk starts with {chunks[1][:_CARRY_OVER_CHARS]!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_source_builder_oversized_single_paragraph_splits_under_limit(db):
+    """A single paragraph exceeding 700 CJK chars must produce multiple chunks,
+    each under 700 CJK chars (after splitting at the 700-char boundary)."""
+    from app.retrieval.source_builder import _split_scenes, _MAX_SCENE_CHARS
+
+    # A single paragraph with 2000 CJK characters — no newlines
+    big_para = "大" * 2000
+    chunks = _split_scenes(big_para)
+
+    assert len(chunks) >= 2, f"Expected multiple chunks for 2000-char paragraph, got {len(chunks)}"
+    for i, chunk in enumerate(chunks):
+        cjk = sum(1 for ch in chunk if "一" <= ch <= "鿿" or "㐀" <= ch <= "䶿")
+        assert cjk <= _MAX_SCENE_CHARS, (
+            f"Chunk {i} has {cjk} CJK chars, exceeding limit of {_MAX_SCENE_CHARS}"
+        )
+
+
+@pytest.mark.asyncio
 async def test_source_builder_content_hash_is_sha256_of_normalized_text(db):
     import hashlib
     from app.retrieval.source_builder import _normalize_text
@@ -862,6 +902,10 @@ async def test_indexer_deletes_changed_point_before_upserting_replacement(db):
     await indexer.sync(novel.id, user.id)
     assert len(store.points) > 0
 
+    # Record the original point IDs and hashes before change
+    original_points = dict(store.points)  # snapshot
+    original_point_ids = list(original_points.keys())
+
     # Change the chapter content
     locked.content = "修改后的内容"
     await db.commit()
@@ -872,6 +916,17 @@ async def test_indexer_deletes_changed_point_before_upserting_replacement(db):
     assert result.upserted > 0
     # Verify delete was called before upsert (delete_calls recorded before new points added)
     assert len(store.delete_calls) >= 1
+    # Verify specific point IDs were deleted — at least the ones for changed sources
+    deleted_ids = [pid for batch in store.delete_calls for pid in batch]
+    # The content changed, so the scene point for the chapter must have been deleted
+    assert len(deleted_ids) > 0
+    # Verify hashes are fresh — current store hashes match the rebuilt sources
+    current_sources = await CanonicalSourceBuilder(db).build(novel.id, user.id)
+    current_hashes = {s.source_id: s.content_hash for s in current_sources}
+    for point in store.points.values():
+        sid = point["payload"]["source_id"]
+        if sid in current_hashes:
+            assert point["payload"]["content_hash"] == current_hashes[sid]
 
 
 @pytest.mark.asyncio

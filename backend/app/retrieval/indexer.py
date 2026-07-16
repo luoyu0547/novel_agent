@@ -18,12 +18,11 @@ after a novel has been deleted.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Sequence
+from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.retrieval.contracts import EmbeddingProvider, VectorStore
+from app.retrieval.contracts import EmbeddingProvider, IndexedSource, VectorStore
 from app.retrieval.source_builder import CanonicalSourceBuilder, RetrievalSource
 
 logger = logging.getLogger(__name__)
@@ -91,7 +90,7 @@ class NovelIndexer:
 
         # Step 2: Fetch existing indexed sources from the store
         old_items = await self._store.list_indexed_sources(tenant_key)
-        old_by_source: dict[str, object] = {
+        old_by_source: dict[str, IndexedSource] = {
             item.source_id: item for item in old_items
         }
 
@@ -114,7 +113,7 @@ class NovelIndexer:
             if source.source_id not in old_by_source:
                 # New source
                 to_upsert.append(source)
-            elif getattr(old_by_source[source.source_id], "content_hash", None) != source.content_hash:
+            elif old_by_source[source.source_id].content_hash != source.content_hash:
                 # Changed source (old point already deleted in step 3)
                 to_upsert.append(source)
 
