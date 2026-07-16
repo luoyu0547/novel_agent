@@ -1,14 +1,18 @@
 """Phase 5 retrieval: durable job model, repository, service, and adapter contracts."""
 import datetime
 import json
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
-from app.models.novel import Novel
+from app.models.foreshadowing import Foreshadowing
+from app.models.memory import CharacterProfile, WorldSetting
+from app.models.novel import Chapter, Novel
+from app.models.plot_fact import PlotFact
 from app.models.retrieval import RetrievalIndexJob
 from app.models.user import User
 from app.repositories.retrieval_index_repo import RetrievalIndexRepo
@@ -188,6 +192,7 @@ async def test_enqueue_purge_dedupes_existing_purge(db):
 from app.retrieval.contracts import (
     EmbeddingProvider,
     HybridEmbedding,
+    IndexedSource,
     RerankResult,
     Reranker,
     RetrievalUnavailable,
@@ -479,12 +484,20 @@ async def test_qdrant_hybrid_search_builds_rrf_query():
 @pytest.mark.asyncio
 async def test_qdrant_list_indexed_sources():
     mock_client = AsyncMock()
-    mock_client.scroll = AsyncMock(return_value=([], None))
+    mock_record = MagicMock()
+    mock_record.id = "point-1"
+    mock_record.payload = {"source_id": "chapter:1:summary", "content_hash": "abc123"}
+    mock_client.scroll = AsyncMock(return_value=([mock_record], None))
 
     store = QdrantVectorStore(settings=fake_settings(), client=mock_client)
-    await store.list_indexed_sources("1:2")
+    result = await store.list_indexed_sources("1:2")
 
     mock_client.scroll.assert_awaited_once()
+    assert len(result) == 1
+    assert isinstance(result[0], IndexedSource)
+    assert result[0].point_id == "point-1"
+    assert result[0].source_id == "chapter:1:summary"
+    assert result[0].content_hash == "abc123"
 
 
 @pytest.mark.asyncio
@@ -559,3 +572,375 @@ async def test_qdrant_satisfies_vector_store_protocol():
     assert hasattr(store, "ensure_collection")
     def _accepts_store(s: VectorStore) -> None: pass
     _accepts_store(store)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: Canonical source builder and idempotent novel indexer
+# ---------------------------------------------------------------------------
+
+from app.retrieval.source_builder import CanonicalSourceBuilder, RetrievalSource
+from app.retrieval.indexer import NovelIndexer, IndexSyncResult
+
+
+# -- Helpers for building test data ----------------------------------------
+
+
+async def add_chapter(db, novel, *, status="draft", content="", summary="", title="章节"):
+    chapter = Chapter(novel_id=novel.id, title=title, content=content, summary=summary, status=status)
+    db.add(chapter)
+    await db.flush()
+    return chapter
+
+
+async def add_character(db, novel, *, name="角色", identity="", personality="", motivation="",
+                        speech_style="", story_role="", current_state=""):
+    char = CharacterProfile(
+        novel_id=novel.id, name=name, identity=identity, personality=personality,
+        motivation=motivation, speech_style=speech_style, story_role=story_role,
+        current_state=current_state,
+    )
+    db.add(char)
+    await db.flush()
+    return char
+
+
+async def add_plot_fact(db, novel, chapter, *, fact_type="event", content="事实", importance="minor"):
+    fact = PlotFact(
+        novel_id=novel.id, chapter_id=chapter.id, fact_type=fact_type,
+        content=content, importance=importance,
+    )
+    db.add(fact)
+    await db.flush()
+    return fact
+
+
+async def add_world_setting(db, novel, *, title="设定", category="地理", content="内容"):
+    setting = WorldSetting(novel_id=novel.id, title=title, category=category, content=content)
+    db.add(setting)
+    await db.flush()
+    return setting
+
+
+async def add_foreshadowing(db, novel, chapter, *, name="伏笔", description="描述",
+                            hidden_truth="", status="planted", risk_warning=""):
+    fs = Foreshadowing(
+        novel_id=novel.id, name=name, description=description,
+        hidden_truth=hidden_truth, status=status,
+        planted_chapter_id=chapter.id, risk_warning=risk_warning,
+    )
+    db.add(fs)
+    await db.flush()
+    return fs
+
+
+# -- Fake store / embedder for indexer tests --------------------------------
+
+
+@dataclass
+class FakeIndexedSource:
+    """Mimics the return type of list_indexed_sources."""
+    point_id: str
+    source_id: str
+    content_hash: str
+
+
+class FakeVectorStore:
+    """In-memory fake VectorStore for indexer tests."""
+
+    def __init__(self) -> None:
+        self.points: dict[str, dict] = {}  # point_id -> point dict
+        self.delete_calls: list[list[str]] = []
+
+    async def ensure_collection(self) -> None:
+        pass
+
+    async def upsert(self, points: list[dict]) -> None:
+        for p in points:
+            self.points[str(p["id"])] = p
+
+    async def hybrid_search(self, query, tenant_key, limit=10, dense_limit=20, sparse_limit=20):
+        return []
+
+    async def list_indexed_sources(self, tenant_key: str) -> list[FakeIndexedSource]:
+        return [
+            FakeIndexedSource(
+                point_id=str(p["id"]),
+                source_id=p["payload"]["source_id"],
+                content_hash=p["payload"]["content_hash"],
+            )
+            for p in self.points.values()
+            if p["payload"].get("tenant_key") == tenant_key
+        ]
+
+    async def delete_point_ids(self, ids: list[str]) -> None:
+        self.delete_calls.append(ids)
+        for pid in ids:
+            self.points.pop(pid, None)
+
+    async def delete_tenant(self, tenant_key: str) -> None:
+        to_remove = [
+            pid for pid, p in self.points.items()
+            if p["payload"].get("tenant_key") == tenant_key
+        ]
+        for pid in to_remove:
+            del self.points[pid]
+
+
+class FakeEmbeddingProvider:
+    """Returns deterministic hybrid embeddings."""
+
+    async def embed_documents(self, texts: list[str]) -> list[HybridEmbedding]:
+        return [
+            HybridEmbedding(
+                dense=[float(i) / 1024] * 1024,
+                sparse_indices=[0],
+                sparse_values=[1.0],
+            )
+            for i, _ in enumerate(texts)
+        ]
+
+    async def embed_query(self, text: str) -> HybridEmbedding:
+        return HybridEmbedding(dense=[0.0] * 1024, sparse_indices=[0], sparse_values=[1.0])
+
+
+# -- Source builder tests ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_source_builder_indexes_only_locked_canon_and_hides_foreshadow_truth(db):
+    user, novel = await make_user_and_novel(db)
+    locked = await add_chapter(db, novel, status="locked", content="甲。\n\n乙。", summary="摘要")
+    await add_chapter(db, novel, status="draft", content="不能入索引")
+    await add_foreshadowing(db, novel, locked, description="雨夜铃声", hidden_truth="凶手身份")
+
+    sources = await CanonicalSourceBuilder(db).build(novel.id, user.id)
+    assert {item.source_type for item in sources} >= {"chapter_summary", "chapter_scene", "foreshadowing_signal", "foreshadowing_guard"}
+    assert all("不能入索引" not in item.text for item in sources)
+    assert next(item for item in sources if item.source_type == "foreshadowing_signal").text.find("凶手身份") == -1
+    assert "凶手身份" in next(item for item in sources if item.source_type == "foreshadowing_guard").text
+
+
+@pytest.mark.asyncio
+async def test_source_builder_skips_draft_chapters(db):
+    user, novel = await make_user_and_novel(db)
+    await add_chapter(db, novel, status="draft", content="草稿内容", summary="草稿摘要")
+
+    sources = await CanonicalSourceBuilder(db).build(novel.id, user.id)
+    chapter_sources = [s for s in sources if s.source_type in ("chapter_summary", "chapter_scene")]
+    assert len(chapter_sources) == 0
+
+
+@pytest.mark.asyncio
+async def test_source_builder_includes_characters_plot_facts_world_settings(db):
+    user, novel = await make_user_and_novel(db)
+    locked = await add_chapter(db, novel, status="locked", content="内容", summary="摘要")
+    char = await add_character(db, novel, name="沈砚", identity="将军", personality="沉稳")
+    fact = await add_plot_fact(db, novel, locked, content="军饷失踪")
+    setting = await add_world_setting(db, novel, title="北境", content="苦寒之地")
+
+    sources = await CanonicalSourceBuilder(db).build(novel.id, user.id)
+    source_ids = {s.source_id for s in sources}
+    assert f"character:{char.id}" in source_ids
+    assert f"plot_fact:{fact.id}" in source_ids
+    assert f"world_setting:{setting.id}" in source_ids
+
+
+@pytest.mark.asyncio
+async def test_source_builder_source_ids_follow_spec_format(db):
+    user, novel = await make_user_and_novel(db)
+    locked = await add_chapter(db, novel, status="locked", content="场景一\n\n场景二", summary="摘要")
+    char = await add_character(db, novel, name="角色")
+    fact = await add_plot_fact(db, novel, locked, content="事实")
+    setting = await add_world_setting(db, novel, title="设定")
+    fs = await add_foreshadowing(db, novel, locked, name="伏笔", description="描述", hidden_truth="真相")
+
+    sources = await CanonicalSourceBuilder(db).build(novel.id, user.id)
+    source_ids = {s.source_id for s in sources}
+    assert f"chapter:{locked.id}:summary" in source_ids
+    assert f"chapter:{locked.id}:scene:0" in source_ids
+    assert f"chapter:{locked.id}:scene:1" in source_ids
+    assert f"character:{char.id}" in source_ids
+    assert f"plot_fact:{fact.id}" in source_ids
+    assert f"world_setting:{setting.id}" in source_ids
+    assert f"foreshadowing:{fs.id}:signal" in source_ids
+    assert f"foreshadowing:{fs.id}:guard" in source_ids
+
+
+@pytest.mark.asyncio
+async def test_source_builder_scene_chunking_combines_paragraphs(db):
+    """Paragraphs under 700 chars should be combined; blank lines split scenes."""
+    user, novel = await make_user_and_novel(db)
+    # Each paragraph is short, so they should combine into one scene chunk
+    content = "短段落一。" * 20 + "\n\n" + "短段落二。" * 20
+    locked = await add_chapter(db, novel, status="locked", content=content, summary="摘要")
+
+    sources = await CanonicalSourceBuilder(db).build(novel.id, user.id)
+    scene_sources = [s for s in sources if s.source_type == "chapter_scene"]
+    # Two blank-line-separated blocks → at least 2 scenes
+    assert len(scene_sources) >= 2
+
+
+@pytest.mark.asyncio
+async def test_source_builder_content_hash_is_sha256_of_normalized_text(db):
+    import hashlib
+    from app.retrieval.source_builder import _normalize_text
+    user, novel = await make_user_and_novel(db)
+    locked = await add_chapter(db, novel, status="locked", content="内容", summary="摘要")
+
+    sources = await CanonicalSourceBuilder(db).build(novel.id, user.id)
+    summary_source = next(s for s in sources if s.source_type == "chapter_summary")
+    expected_hash = hashlib.sha256(_normalize_text(summary_source.text).encode()).hexdigest()
+    assert summary_source.content_hash == expected_hash
+
+
+@pytest.mark.asyncio
+async def test_source_builder_tenant_key_format(db):
+    user, novel = await make_user_and_novel(db)
+    locked = await add_chapter(db, novel, status="locked", content="内容", summary="摘要")
+
+    sources = await CanonicalSourceBuilder(db).build(novel.id, user.id)
+    assert all(s.tenant_key == f"{user.id}:{novel.id}" for s in sources)
+
+
+@pytest.mark.asyncio
+async def test_source_builder_foreshadowing_guard_visibility(db):
+    user, novel = await make_user_and_novel(db)
+    locked = await add_chapter(db, novel, status="locked", content="内容", summary="摘要")
+    await add_foreshadowing(db, novel, locked, name="伏笔", description="描述",
+                            hidden_truth="真相", risk_warning="高风险")
+
+    sources = await CanonicalSourceBuilder(db).build(novel.id, user.id)
+    guard = next(s for s in sources if s.source_type == "foreshadowing_guard")
+    signal = next(s for s in sources if s.source_type == "foreshadowing_signal")
+    assert guard.visibility == "guard"
+    assert signal.visibility != "guard"
+    assert "真相" in guard.text
+    assert "高风险" in guard.text
+    assert "真相" not in signal.text
+
+
+@pytest.mark.asyncio
+async def test_source_builder_point_id_is_deterministic_uuid5(db):
+    user, novel = await make_user_and_novel(db)
+    locked = await add_chapter(db, novel, status="locked", content="内容", summary="摘要")
+
+    sources = await CanonicalSourceBuilder(db).build(novel.id, user.id)
+    for source in sources:
+        # point_id should be a valid UUID string
+        parsed = uuid.UUID(source.point_id)
+        assert parsed.version == 5
+
+
+# -- Indexer tests ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_indexer_sync_returns_result_with_counts(db):
+    user, novel = await make_user_and_novel(db)
+    locked = await add_chapter(db, novel, status="locked", content="内容", summary="摘要")
+
+    store = FakeVectorStore()
+    embedder = FakeEmbeddingProvider()
+    indexer = NovelIndexer(db, embedder=embedder, store=store)
+
+    result = await indexer.sync(novel.id, user.id)
+    assert isinstance(result, IndexSyncResult)
+    assert result.upserted > 0
+    assert result.deleted == 0
+
+
+@pytest.mark.asyncio
+async def test_indexer_deletes_changed_point_before_upserting_replacement(db):
+    user, novel = await make_user_and_novel(db)
+    locked = await add_chapter(db, novel, status="locked", content="原始内容", summary="原始摘要")
+
+    store = FakeVectorStore()
+    embedder = FakeEmbeddingProvider()
+    indexer = NovelIndexer(db, embedder=embedder, store=store)
+
+    # First sync
+    await indexer.sync(novel.id, user.id)
+    assert len(store.points) > 0
+
+    # Change the chapter content
+    locked.content = "修改后的内容"
+    await db.commit()
+
+    # Second sync — should delete stale then upsert new
+    result = await indexer.sync(novel.id, user.id)
+    assert result.deleted > 0
+    assert result.upserted > 0
+    # Verify delete was called before upsert (delete_calls recorded before new points added)
+    assert len(store.delete_calls) >= 1
+
+
+@pytest.mark.asyncio
+async def test_indexer_deletes_orphaned_source_points(db):
+    user, novel = await make_user_and_novel(db)
+    locked = await add_chapter(db, novel, status="locked", content="内容", summary="摘要")
+
+    store = FakeVectorStore()
+    embedder = FakeEmbeddingProvider()
+    indexer = NovelIndexer(db, embedder=embedder, store=store)
+
+    # First sync
+    await indexer.sync(novel.id, user.id)
+
+    # Delete the chapter (simulate it being removed)
+    await db.delete(locked)
+    await db.commit()
+
+    # Second sync — should delete all orphaned points
+    result = await indexer.sync(novel.id, user.id)
+    assert result.deleted > 0
+    assert result.upserted == 0
+
+
+@pytest.mark.asyncio
+async def test_indexer_noop_when_nothing_changed(db):
+    user, novel = await make_user_and_novel(db)
+    locked = await add_chapter(db, novel, status="locked", content="内容", summary="摘要")
+
+    store = FakeVectorStore()
+    embedder = FakeEmbeddingProvider()
+    indexer = NovelIndexer(db, embedder=embedder, store=store)
+
+    # First sync
+    result1 = await indexer.sync(novel.id, user.id)
+    assert result1.upserted > 0
+
+    # Second sync with no changes — should be a no-op
+    result2 = await indexer.sync(novel.id, user.id)
+    assert result2.upserted == 0
+    assert result2.deleted == 0
+
+
+@pytest.mark.asyncio
+async def test_indexer_batches_embedding_calls(db):
+    user, novel = await make_user_and_novel(db)
+    locked = await add_chapter(db, novel, status="locked", content="内容", summary="摘要")
+    await add_character(db, novel, name="角色")
+    await add_plot_fact(db, novel, locked, content="事实")
+    await add_world_setting(db, novel, title="设定")
+
+    store = FakeVectorStore()
+    embedder = FakeEmbeddingProvider()
+    indexer = NovelIndexer(db, embedder=embedder, store=store)
+
+    result = await indexer.sync(novel.id, user.id)
+    # All sources should be indexed
+    assert result.upserted > 0
+    assert len(store.points) == result.upserted
+
+
+@pytest.mark.asyncio
+async def test_indexer_never_indexes_draft_chapters(db):
+    user, novel = await make_user_and_novel(db)
+    await add_chapter(db, novel, status="draft", content="草稿内容", summary="草稿摘要")
+
+    store = FakeVectorStore()
+    embedder = FakeEmbeddingProvider()
+    indexer = NovelIndexer(db, embedder=embedder, store=store)
+
+    result = await indexer.sync(novel.id, user.id)
+    assert result.upserted == 0

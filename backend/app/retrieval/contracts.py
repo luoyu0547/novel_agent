@@ -54,6 +54,15 @@ class Reranker(Protocol):
     async def rerank(self, query: str, documents: list[str]) -> list[RerankResult]: ...
 
 
+@dataclass(frozen=True)
+class IndexedSource:
+    """A previously indexed source record returned by list_indexed_sources."""
+
+    point_id: str
+    source_id: str
+    content_hash: str
+
+
 @runtime_checkable
 class VectorStore(Protocol):
     """Protocol for vector store backends with hybrid search."""
@@ -68,6 +77,6 @@ class VectorStore(Protocol):
         dense_limit: int = 20,
         sparse_limit: int = 20,
     ) -> list[dict]: ...
-    async def list_indexed_sources(self, tenant_key: str) -> list[str]: ...
+    async def list_indexed_sources(self, tenant_key: str) -> list[IndexedSource]: ...
     async def delete_point_ids(self, ids: list[str]) -> None: ...
     async def delete_tenant(self, tenant_key: str) -> None: ...

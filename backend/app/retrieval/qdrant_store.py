@@ -11,7 +11,7 @@ from typing import Any
 
 from qdrant_client import AsyncQdrantClient, models
 
-from app.retrieval.contracts import HybridEmbedding, RetrievalUnavailable
+from app.retrieval.contracts import HybridEmbedding, IndexedSource, RetrievalUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -139,11 +139,10 @@ class QdrantVectorStore:
             logger.warning("Qdrant hybrid_search failed: %s", type(exc).__name__)
             raise RetrievalUnavailable() from exc
 
-    async def list_indexed_sources(self, tenant_key: str) -> list[str]:
-        """Return distinct source identifiers for a tenant."""
+    async def list_indexed_sources(self, tenant_key: str) -> list[IndexedSource]:
+        """Return indexed source records for a tenant with point_id, source_id, content_hash."""
         try:
-            seen: set[str] = set()
-            sources: list[str] = []
+            sources: list[IndexedSource] = []
             offset = None
             while True:
                 records, offset = await self._client.scroll(
@@ -156,17 +155,17 @@ class QdrantVectorStore:
                             )
                         ]
                     ),
-                    with_payload=["source_chapter"],
+                    with_payload=["source_id", "content_hash"],
                     limit=100,
                     offset=offset,
                 )
                 for record in records:
-                    source = record.payload.get("source_chapter")
-                    if source is not None:
-                        key = str(source)
-                        if key not in seen:
-                            seen.add(key)
-                            sources.append(key)
+                    payload = record.payload or {}
+                    sources.append(IndexedSource(
+                        point_id=str(record.id),
+                        source_id=payload.get("source_id", ""),
+                        content_hash=payload.get("content_hash", ""),
+                    ))
                 if offset is None:
                     break
             return sources
