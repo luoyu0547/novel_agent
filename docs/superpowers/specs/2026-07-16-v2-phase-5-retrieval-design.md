@@ -294,6 +294,49 @@ RETRIEVAL_ENABLED=true
 - 不为每一部小说单独创建 collection，不部署本地 embedding/rerank 模型。
 - 不把技术诊断默认展示给作者，也不以“检索分数高”替代质量门禁和作者决定。
 
+## 本地运行指南
+
+### 启动检索服务
+
+```bash
+# 1. 启动 Qdrant
+docker compose up -d qdrant
+
+# 2. 运行数据库迁移
+cd backend
+.venv/bin/python -m alembic upgrade head
+
+# 3. 启动索引 worker（独立终端）
+.venv/bin/python -m app.retrieval.worker
+
+# 4. 通过 API 请求重建索引
+# POST /api/v1/novels/{novel_id}/retrieval-index/rebuild
+```
+
+### 环境变量
+
+| 变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `RETRIEVAL_ENABLED` | 启用检索增强 | `true` |
+| `QDRANT_URL` | Qdrant 地址 | `http://127.0.0.1:6333` |
+| `QDRANT_COLLECTION` | 集合名称 | `novel-context-v1` |
+| `MODEL_STUDIO_BASE_URL` | 百炼工作空间端点 | （必填） |
+| `MODEL_STUDIO_API_KEY` | 百炼 API 密钥 | （必填） |
+| `MODEL_STUDIO_EMBEDDING_MODEL` | 嵌入模型 | `text-embedding-v4` |
+| `MODEL_STUDIO_RERANK_MODEL` | 重排模型 | `qwen3-rerank` |
+
+### 降级行为
+
+- Qdrant 不可用时，写作仍可正常进行，来源快照记录 `retrieval_status: fallback`
+- Model Studio 超时时，同上
+- 旧 WritingRun 的来源快照不会因索引重建而改变
+
+### 安全
+
+- Qdrant 仅绑定本机回环地址（127.0.0.1:6333）
+- 每次查询强制 tenant_key 过滤，防止跨小说命中
+- API 密钥不进入日志、快照或前端
+
 ## 12. 完成定义
 
 当一部小说进入长篇阶段后，作者触发上下文包或生成草稿，系统能从已锁定的历史章节、角色、剧情事实、世界设定和伏笔中找出与当前任务相关的最小资料集，分别提供给写作与风险守卫。索引在后台可靠更新、可重建、失败可降级；每次写作运行留下不可变且可定位的来源快照，Phase 6 的作者工作台能在对应 AI 消息下稳定展示这些来源，而不会干扰中央文稿。

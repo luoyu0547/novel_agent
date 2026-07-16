@@ -2464,3 +2464,23 @@ async def test_older_writing_run_snapshot_unchanged_after_newer_package(db):
     # Refresh the first run from DB and verify its snapshot is unchanged
     await db.refresh(first_run)
     assert first_run.context_snapshot_json["source_items"] == original_source_items
+
+
+# ---------------------------------------------------------------------------
+# Task 8: Operational smoke checks
+# ---------------------------------------------------------------------------
+
+
+def test_retrieval_configuration_has_no_default_secret():
+    from app.core.config import Settings
+    s = Settings()
+    assert s.MODEL_STUDIO_API_KEY == ""
+    assert s.QDRANT_COLLECTION == "novel-context-v1"
+
+
+def test_compose_binds_qdrant_to_loopback():
+    from pathlib import Path
+    compose = Path(__file__).parents[2] / "docker-compose.yml"
+    text = compose.read_text()
+    assert "127.0.0.1:6333:6333" in text
+    assert "qdrant_storage" in text
