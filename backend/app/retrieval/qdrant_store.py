@@ -35,17 +35,17 @@ class QdrantVectorStore:
     def __init__(self, settings: Any, client: AsyncQdrantClient | None = None) -> None:
         self._url = settings.QDRANT_URL
         self._collection = settings.QDRANT_COLLECTION
-        self.client = client or AsyncQdrantClient(url=self._url)
+        self._client = client or AsyncQdrantClient(url=self._url)
 
     # -- Collection management -----------------------------------------------
 
     async def ensure_collection(self) -> None:
         """Create the collection with dense/sparse vectors if absent."""
         try:
-            exists = await self.client.collection_exists(self._collection)
+            exists = await self._client.collection_exists(self._collection)
             if exists:
                 return
-            await self.client.create_collection(
+            await self._client.create_collection(
                 collection_name=self._collection,
                 vectors_config={
                     _DENSE_VECTOR_NAME: models.VectorParams(
@@ -58,12 +58,12 @@ class QdrantVectorStore:
                 },
             )
             # Create payload indexes for efficient filtering
-            await self.client.create_payload_index(
+            await self._client.create_payload_index(
                 collection_name=self._collection,
                 field_name="tenant_key",
                 field_schema=models.PayloadSchemaType.KEYWORD,
             )
-            await self.client.create_payload_index(
+            await self._client.create_payload_index(
                 collection_name=self._collection,
                 field_name="source_chapter",
                 field_schema=models.PayloadSchemaType.INTEGER,
@@ -71,7 +71,7 @@ class QdrantVectorStore:
         except Exception as exc:
             if isinstance(exc, RetrievalUnavailable):
                 raise
-            logger.warning("Qdrant ensure_collection failed: %s", exc)
+            logger.warning("Qdrant ensure_collection failed: %s", type(exc).__name__)
             raise RetrievalUnavailable() from exc
 
     # -- Write operations ----------------------------------------------------
@@ -79,11 +79,11 @@ class QdrantVectorStore:
     async def upsert(self, points: list[dict]) -> None:
         """Upsert a list of point dicts into the collection."""
         try:
-            await self.client.upsert(collection_name=self._collection, points=points)
+            await self._client.upsert(collection_name=self._collection, points=points)
         except Exception as exc:
             if isinstance(exc, RetrievalUnavailable):
                 raise
-            logger.warning("Qdrant upsert failed: %s", exc)
+            logger.warning("Qdrant upsert failed: %s", type(exc).__name__)
             raise RetrievalUnavailable() from exc
 
     # -- Read operations -----------------------------------------------------
@@ -106,7 +106,7 @@ class QdrantVectorStore:
             ]
         )
         try:
-            result = await self.client.query_points(
+            result = await self._client.query_points(
                 collection_name=self._collection,
                 prefetch=[
                     models.Prefetch(
@@ -136,16 +136,17 @@ class QdrantVectorStore:
         except Exception as exc:
             if isinstance(exc, RetrievalUnavailable):
                 raise
-            logger.warning("Qdrant hybrid_search failed: %s", exc)
+            logger.warning("Qdrant hybrid_search failed: %s", type(exc).__name__)
             raise RetrievalUnavailable() from exc
 
     async def list_indexed_sources(self, tenant_key: str) -> list[str]:
         """Return distinct source identifiers for a tenant."""
         try:
+            seen: set[str] = set()
             sources: list[str] = []
             offset = None
             while True:
-                records, offset = await self.client.scroll(
+                records, offset = await self._client.scroll(
                     collection_name=self._collection,
                     scroll_filter=models.Filter(
                         must=[
@@ -161,15 +162,18 @@ class QdrantVectorStore:
                 )
                 for record in records:
                     source = record.payload.get("source_chapter")
-                    if source is not None and str(source) not in sources:
-                        sources.append(str(source))
+                    if source is not None:
+                        key = str(source)
+                        if key not in seen:
+                            seen.add(key)
+                            sources.append(key)
                 if offset is None:
                     break
             return sources
         except Exception as exc:
             if isinstance(exc, RetrievalUnavailable):
                 raise
-            logger.warning("Qdrant list_indexed_sources failed: %s", exc)
+            logger.warning("Qdrant list_indexed_sources failed: %s", type(exc).__name__)
             raise RetrievalUnavailable() from exc
 
     # -- Delete operations ---------------------------------------------------
@@ -177,20 +181,20 @@ class QdrantVectorStore:
     async def delete_point_ids(self, ids: list[str]) -> None:
         """Delete points by their IDs."""
         try:
-            await self.client.delete(
+            await self._client.delete(
                 collection_name=self._collection,
                 points_selector=models.PointIdsList(points=ids),
             )
         except Exception as exc:
             if isinstance(exc, RetrievalUnavailable):
                 raise
-            logger.warning("Qdrant delete_point_ids failed: %s", exc)
+            logger.warning("Qdrant delete_point_ids failed: %s", type(exc).__name__)
             raise RetrievalUnavailable() from exc
 
     async def delete_tenant(self, tenant_key: str) -> None:
         """Delete all points belonging to a tenant."""
         try:
-            await self.client.delete(
+            await self._client.delete(
                 collection_name=self._collection,
                 points_selector=models.FilterSelector(
                     filter=models.Filter(
@@ -206,5 +210,5 @@ class QdrantVectorStore:
         except Exception as exc:
             if isinstance(exc, RetrievalUnavailable):
                 raise
-            logger.warning("Qdrant delete_tenant failed: %s", exc)
+            logger.warning("Qdrant delete_tenant failed: %s", type(exc).__name__)
             raise RetrievalUnavailable() from exc

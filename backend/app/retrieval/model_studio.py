@@ -76,7 +76,7 @@ class ModelStudioClient:
                 for r in results
             ]
         except (KeyError, TypeError, IndexError) as exc:
-            logger.warning("Model Studio rerank returned unexpected payload: %s", exc)
+            logger.warning("Model Studio rerank returned unexpected payload: %s", type(exc).__name__)
             raise RetrievalUnavailable() from exc
 
     # -- Internals -----------------------------------------------------------
@@ -99,9 +99,12 @@ class ModelStudioClient:
                 dense = emb["embedding"]
                 sparse = emb["sparse_embedding"]
                 if len(dense) != _DENSE_DIMENSION:
-                    raise RetrievalUnavailable(
-                        f"Expected {_DENSE_DIMENSION} dense dimensions, got {len(dense)}"
+                    logger.warning(
+                        "Model Studio returned unexpected dense dimension: expected=%d got=%d",
+                        _DENSE_DIMENSION,
+                        len(dense),
                     )
+                    raise RetrievalUnavailable()
                 result.append(
                     HybridEmbedding(
                         dense=dense,
@@ -113,7 +116,7 @@ class ModelStudioClient:
         except (KeyError, TypeError, IndexError) as exc:
             if isinstance(exc, RetrievalUnavailable):
                 raise
-            logger.warning("Model Studio embedding returned unexpected payload: %s", exc)
+            logger.warning("Model Studio embedding returned unexpected payload: %s", type(exc).__name__)
             raise RetrievalUnavailable() from exc
 
     async def _post(self, path: str, payload: dict[str, Any]) -> Any:
@@ -127,15 +130,15 @@ class ModelStudioClient:
         try:
             response = await self._http.post(url, json=payload, headers=headers)
         except httpx.TimeoutException as exc:
-            logger.warning("Model Studio request timed out: %s", exc)
+            logger.warning("Model Studio timeout: path=%s", path)
             raise RetrievalUnavailable() from exc
         except httpx.HTTPError as exc:
-            logger.warning("Model Studio HTTP error: %s", exc)
+            logger.warning("Model Studio HTTP error: path=%s type=%s", path, type(exc).__name__)
             raise RetrievalUnavailable() from exc
 
         if response.status_code >= 400:
             logger.warning(
-                "Model Studio returned status %s for %s",
+                "Model Studio request failed: status=%s path=%s",
                 response.status_code,
                 path,
             )
@@ -144,5 +147,5 @@ class ModelStudioClient:
         try:
             return response.json()
         except Exception as exc:
-            logger.warning("Model Studio returned non-JSON response: %s", exc)
+            logger.warning("Model Studio non-JSON response: type=%s", type(exc).__name__)
             raise RetrievalUnavailable() from exc
