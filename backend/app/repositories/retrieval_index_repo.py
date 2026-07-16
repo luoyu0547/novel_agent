@@ -87,6 +87,7 @@ class RetrievalIndexRepo:
         """Mark a job as completed."""
         job.status = "completed"
         job.lease_expires_at = None
+        job.completed_at = datetime.datetime.now()
         await self.db.flush()
 
     async def retry(self, job: RetrievalIndexJob, error: str) -> None:

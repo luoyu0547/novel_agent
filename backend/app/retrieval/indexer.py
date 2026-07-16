@@ -148,6 +148,7 @@ class NovelIndexer:
                         "locator": source.locator,
                         "content_hash": source.content_hash,
                         "importance": source.importance,
+                        "index_version": source.index_version,
                     },
                 })
 

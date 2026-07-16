@@ -90,6 +90,7 @@ async def main() -> None:
 
     embedder = ModelStudioClient(settings=settings)
     store = QdrantVectorStore(settings=settings)
+    await store.ensure_collection()
 
     class _IndexerAdapter:
         """Adapts the per-session indexer to the worker's interface.

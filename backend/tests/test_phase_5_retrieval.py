@@ -460,7 +460,7 @@ async def test_qdrant_hybrid_search_builds_rrf_query():
     scored_point = MagicMock()
     scored_point.id = "point-1"
     scored_point.score = 0.95
-    scored_point.payload = {"text": "匹配文本", "source_chapter": 3}
+    scored_point.payload = {"text": "匹配文本", "chapter_id": 3}
     mock_result = MagicMock()
     mock_result.points = [scored_point]
     mock_client.query_points = AsyncMock(return_value=mock_result)
@@ -740,7 +740,7 @@ async def test_source_builder_includes_characters_plot_facts_world_settings(db):
 
     sources = await CanonicalSourceBuilder(db).build(novel.id, user.id)
     source_ids = {s.source_id for s in sources}
-    assert f"character:{char.id}" in source_ids
+    assert f"character_profile:{char.id}" in source_ids
     assert f"plot_fact:{fact.id}" in source_ids
     assert f"world_setting:{setting.id}" in source_ids
 
@@ -759,7 +759,7 @@ async def test_source_builder_source_ids_follow_spec_format(db):
     assert f"chapter:{locked.id}:summary" in source_ids
     assert f"chapter:{locked.id}:scene:0" in source_ids
     assert f"chapter:{locked.id}:scene:1" in source_ids
-    assert f"character:{char.id}" in source_ids
+    assert f"character_profile:{char.id}" in source_ids
     assert f"plot_fact:{fact.id}" in source_ids
     assert f"world_setting:{setting.id}" in source_ids
     assert f"foreshadowing:{fs.id}:signal" in source_ids
@@ -1544,8 +1544,8 @@ def _make_retrieved_source(
             locator = {"chapter_id": chapter_id, "type": "scene", "scene_index": 0}
         elif source_type == "chapter_summary":
             locator = {"chapter_id": chapter_id, "type": "summary"}
-        elif source_type == "character":
-            locator = {"character_id": int(source_id.split(":")[1])}
+        elif source_type in ("character", "character_profile"):
+            locator = {"character_id": int(source_id.split(":")[-1])}
         elif source_type == "plot_fact":
             locator = {"plot_fact_id": int(source_id.split(":")[1])}
         elif source_type == "world_setting":
@@ -1579,8 +1579,8 @@ def canonical_points_for_two_novels() -> list[RetrievedSource]:
             importance="minor",
         ),
         _make_retrieved_source(
-            source_id="character:7",
-            source_type="character",
+            source_id="character_profile:7",
+            source_type="character_profile",
             title="沈砚",
             preview="将军，沉稳果决",
         ),
@@ -1712,8 +1712,8 @@ class FailingEmbeddingProvider:
 async def test_retrieval_uses_tenant_filter_reranks_and_limits_duplicate_scenes():
     store = RetrievalFakeVectorStore(points=canonical_points_for_two_novels())
     # Reranker order [2, 0, 1] means: original index 2 first, then 0, then 1
-    # Original writer candidates: [scene:3, character:7, plot_fact:12, scene:0, scene:1, world_setting:3]
-    # Reranked: [plot_fact:12, scene:3, character:7, ...]
+    # Original writer candidates: [scene:3, character_profile:7, plot_fact:12, scene:0, scene:1, world_setting:3]
+    # Reranked: [plot_fact:12, scene:3, character_profile:7, ...]
     reranker = FakeRerankerForService([2, 0, 1])
     service = RetrievalService(
         embedder=FakeEmbeddingProvider(),
@@ -1732,7 +1732,7 @@ async def test_retrieval_uses_tenant_filter_reranks_and_limits_duplicate_scenes(
     assert store.filters == [("1:1", "writer"), ("1:1", "guard")]
     # source_items should reflect the reranked order
     source_ids = [item["source_id"] for item in result.source_items]
-    # Reranker put plot_fact:12 (index 2) first, then scene:3 (index 0), then character:7 (index 1)
+    # Reranker put plot_fact:12 (index 2) first, then scene:3 (index 0), then character_profile:7 (index 1)
     assert source_ids[0] == "plot_fact:12"
     assert source_ids[1] == "chapter:18:scene:3"
     # No more than 2 chapter_scene items per chapter in writer_items
@@ -1973,13 +1973,13 @@ async def test_duplicate_source_id_rejected():
     """Duplicate source_id should be rejected (only first occurrence kept)."""
     points = [
         _make_retrieved_source(
-            source_id="character:7",
-            source_type="character",
+            source_id="character_profile:7",
+            source_type="character_profile",
             title="沈砚",
         ),
         _make_retrieved_source(
-            source_id="character:7",
-            source_type="character",
+            source_id="character_profile:7",
+            source_type="character_profile",
             title="沈砚（重复）",
         ),
     ]
@@ -1998,7 +1998,7 @@ async def test_duplicate_source_id_rejected():
         )
     )
     source_ids = [item["source_id"] for item in result.source_items]
-    assert source_ids.count("character:7") == 1
+    assert source_ids.count("character_profile:7") == 1
 
 
 @pytest.mark.asyncio
@@ -2319,7 +2319,7 @@ async def test_every_writing_run_copies_context_snapshot_even_without_plot_plan(
             return RetrievalContext(
                 writer_items=[
                     {
-                        "source_id": "character:7",
+                        "source_id": "character_profile:7",
                         "source_type": "character_profile",
                         "title": "沈砚",
                         "locator": {"character_id": 7},
@@ -2330,7 +2330,7 @@ async def test_every_writing_run_copies_context_snapshot_even_without_plot_plan(
                 guard_constraints=[],
                 source_items=[
                     {
-                        "source_id": "character:7",
+                        "source_id": "character_profile:7",
                         "source_type": "character_profile",
                         "title": "沈砚",
                         "locator": {"character_id": 7},
@@ -2351,7 +2351,7 @@ async def test_every_writing_run_copies_context_snapshot_even_without_plot_plan(
     # Snapshot must exist and contain source_items
     assert run.context_snapshot_json is not None
     assert "source_items" in run.context_snapshot_json
-    assert run.context_snapshot_json["source_items"][0]["source_id"] == "character:7"
+    assert run.context_snapshot_json["source_items"][0]["source_id"] == "character_profile:7"
 
 
 @pytest.mark.asyncio

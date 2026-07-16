@@ -29,6 +29,7 @@ class RetrievalIndexJob(Base):
     next_attempt_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
     lease_expires_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
     started_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     requested_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.datetime.now

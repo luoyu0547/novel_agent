@@ -25,6 +25,7 @@ def upgrade() -> None:
         sa.Column("next_attempt_at", sa.DateTime(), nullable=True),
         sa.Column("lease_expires_at", sa.DateTime(), nullable=True),
         sa.Column("started_at", sa.DateTime(), nullable=True),
+        sa.Column("completed_at", sa.DateTime(), nullable=True),
         sa.Column("last_error", sa.Text(), nullable=True),
         sa.Column("requested_at", sa.DateTime(), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),

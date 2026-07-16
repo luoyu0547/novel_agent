@@ -47,7 +47,7 @@ class RetrievalSource:
         ``chapter:3:summary``, ``foreshadowing:7:signal``.
     source_type:
         Category label: ``chapter_summary``, ``chapter_scene``,
-        ``character``, ``plot_fact``, ``world_setting``,
+        ``character_profile``, ``plot_fact``, ``world_setting``,
         ``foreshadowing_signal``, ``foreshadowing_guard``.
     source_record_id:
         The database primary key of the originating record.
@@ -85,6 +85,7 @@ class RetrievalSource:
     tenant_key: str
     point_id: str
     importance: str = "minor"
+    index_version: str = "v1"
 
 
 # ---------------------------------------------------------------------------
@@ -301,8 +302,8 @@ class CanonicalSourceBuilder:
 
             text = "\n".join(parts)
             src = self._make_source(
-                source_id=f"character:{char.id}",
-                source_type="character",
+                source_id=f"character_profile:{char.id}",
+                source_type="character_profile",
                 record_id=char.id,
                 chapter_id=None,
                 title=char.name,
@@ -400,6 +401,8 @@ class CanonicalSourceBuilder:
                 guard_parts.append(f"隐藏真相：{fs.hidden_truth}")
             if fs.risk_warning:
                 guard_parts.append(f"风险提示：{fs.risk_warning}")
+            if fs.expected_reveal_chapter_id:
+                guard_parts.append(f"预计揭示章节：{fs.expected_reveal_chapter_id}")
             guard_text = "\n".join(guard_parts)
 
             sources.append(self._make_source(

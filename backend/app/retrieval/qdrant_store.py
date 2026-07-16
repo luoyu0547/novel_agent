@@ -70,8 +70,28 @@ class QdrantVectorStore:
             )
             await self._client.create_payload_index(
                 collection_name=self._collection,
-                field_name="source_chapter",
+                field_name="chapter_id",
                 field_schema=models.PayloadSchemaType.INTEGER,
+            )
+            await self._client.create_payload_index(
+                collection_name=self._collection,
+                field_name="source_type",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+            await self._client.create_payload_index(
+                collection_name=self._collection,
+                field_name="source_record_id",
+                field_schema=models.PayloadSchemaType.INTEGER,
+            )
+            await self._client.create_payload_index(
+                collection_name=self._collection,
+                field_name="visibility",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+            await self._client.create_payload_index(
+                collection_name=self._collection,
+                field_name="index_version",
+                field_schema=models.PayloadSchemaType.KEYWORD,
             )
         except Exception as exc:
             if isinstance(exc, RetrievalUnavailable):

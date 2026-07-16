@@ -35,12 +35,12 @@ class ModelStudioClient:
         backed by ``httpx.MockTransport`` for testing.
     """
 
-    def __init__(self, settings: Any, http: httpx.AsyncClient) -> None:
+    def __init__(self, settings: Any, http: httpx.AsyncClient | None = None) -> None:
         self._base_url = str(settings.MODEL_STUDIO_BASE_URL).rstrip("/")
         self._api_key = settings.MODEL_STUDIO_API_KEY
         self._embedding_model = settings.MODEL_STUDIO_EMBEDDING_MODEL
         self._rerank_model = settings.MODEL_STUDIO_RERANK_MODEL
-        self._http = http
+        self._http = http or httpx.AsyncClient()
 
     # -- Embedding -----------------------------------------------------------
 
