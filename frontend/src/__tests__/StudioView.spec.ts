@@ -5,8 +5,11 @@ import { createRouter, createWebHistory, type Router } from 'vue-router'
 import StudioView from '@/views/studio/StudioView.vue'
 import StudioChapterExplorer from '@/components/studio/StudioChapterExplorer.vue'
 import StudioDocumentPane from '@/components/studio/StudioDocumentPane.vue'
+import StudioConversationPane from '@/components/studio/StudioConversationPane.vue'
+import StudioActionCard from '@/components/studio/StudioActionCard.vue'
+import StudioMessage from '@/components/studio/StudioMessage.vue'
 import type { ChapterOut, NovelOut } from '@/types/novel'
-import type { WritingSession, StudioDocument } from '@/types/writingStudio'
+import type { WritingSession, StudioDocument, WritingMessage, StudioConfirmationAction } from '@/types/writingStudio'
 
 // ── Mocks (hoisted — must not reference top-level variables) ──────────
 
@@ -27,6 +30,7 @@ vi.mock('@/api/writingStudio', () => ({
   sendStudioMessage: vi.fn(),
   confirmStudioAction: vi.fn(),
   saveStudioWorkingCopy: vi.fn(),
+  getRunSources: vi.fn(),
 }))
 
 // ── Fixtures ──────────────────────────────────────────────────────────
@@ -154,6 +158,15 @@ const globalStubs = {
   ElText: {
     props: ['size', 'type'],
     template: '<span data-testid="el-text"><slot /></span>',
+  },
+  ElCollapse: {
+    props: ['modelValue', 'accordion'],
+    template: '<div data-testid="el-collapse"><slot /></div>',
+    emits: ['update:modelValue', 'change'],
+  },
+  ElCollapseItem: {
+    props: ['title', 'name', 'disabled'],
+    template: '<div data-testid="el-collapse-item"><slot name="title" /><slot /></div>',
   },
 }
 
@@ -713,5 +726,308 @@ describe('Studio route redirect', () => {
 
     expect(router.currentRoute.value.name).toBe('studio')
     expect(router.currentRoute.value.query.chapter_id).toBe('18')
+  })
+})
+
+// ── Conversation and sources fixtures ──────────────────────────────────
+
+const authorMessage: WritingMessage = {
+  id: 10,
+  session_id: 7,
+  role: 'author',
+  message_type: 'text',
+  content_json: { text: '请帮我生成第十八章草稿' },
+  action_status: 'completed',
+  writing_run_id: null,
+  context_package_id: null,
+  draft_version_id: null,
+}
+
+const assistantDraftMessage: WritingMessage = {
+  id: 21,
+  session_id: 7,
+  role: 'assistant',
+  message_type: 'draft',
+  content_json: { text: '沈砚推开账房门...', content: '沈砚推开账房门...' },
+  action_status: 'completed',
+  writing_run_id: 21,
+  context_package_id: null,
+  draft_version_id: null,
+}
+
+const acceptanceMessage: WritingMessage = {
+  id: 30,
+  session_id: 7,
+  role: 'assistant',
+  message_type: 'draft',
+  content_json: { text: '是否采纳此草稿？', prompt: '是否采纳此草稿？', actions: ['accept', 'discard'] },
+  action_status: 'needs_confirmation',
+  writing_run_id: 21,
+  context_package_id: null,
+  draft_version_id: null,
+}
+
+const failedMessage: WritingMessage = {
+  id: 40,
+  session_id: 7,
+  role: 'assistant',
+  message_type: 'error',
+  content_json: { text: '生成失败' },
+  action_status: 'failed',
+  writing_run_id: null,
+  context_package_id: null,
+  draft_version_id: null,
+}
+
+describe('StudioConversationPane', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('renders messages in the conversation pane', () => {
+    const wrapper = mount(StudioConversationPane, {
+      props: {
+        messages: [authorMessage, assistantDraftMessage],
+        novelId: 1,
+        sending: false,
+      },
+      global: { stubs: globalStubs },
+    })
+
+    expect(wrapper.find('[data-testid="studio-conversation-pane"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="studio-message-10"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="studio-message-21"]').exists()).toBe(true)
+  })
+
+  it('shows empty state when no messages exist', () => {
+    const wrapper = mount(StudioConversationPane, {
+      props: {
+        messages: [],
+        novelId: 1,
+        sending: false,
+      },
+      global: { stubs: globalStubs },
+    })
+
+    expect(wrapper.find('[data-testid="studio-conversation-empty"]').exists()).toBe(true)
+  })
+
+  it('emits send-message when composer submits', async () => {
+    const wrapper = mount(StudioConversationPane, {
+      props: {
+        messages: [],
+        novelId: 1,
+        sending: false,
+      },
+      global: { stubs: globalStubs },
+    })
+
+    // Find the send button and click it
+    // Since ElInput is stubbed, we set the ref directly
+    wrapper.vm.composer = '测试消息'
+    await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-testid="studio-send-btn"]').trigger('click')
+    expect(wrapper.emitted('send-message')).toBeTruthy()
+    expect(wrapper.emitted('send-message')![0]).toEqual(['测试消息'])
+  })
+
+  it('does not emit send-message when composer is empty', async () => {
+    const wrapper = mount(StudioConversationPane, {
+      props: {
+        messages: [],
+        novelId: 1,
+        sending: false,
+      },
+      global: { stubs: globalStubs },
+    })
+
+    await wrapper.find('[data-testid="studio-send-btn"]').trigger('click')
+    expect(wrapper.emitted('send-message')).toBeUndefined()
+  })
+
+  it('does not emit send-message when sending is true', async () => {
+    const wrapper = mount(StudioConversationPane, {
+      props: {
+        messages: [],
+        novelId: 1,
+        sending: true,
+      },
+      global: { stubs: globalStubs },
+    })
+
+    wrapper.vm.composer = '测试消息'
+    await wrapper.vm.$nextTick()
+
+    await wrapper.find('[data-testid="studio-send-btn"]').trigger('click')
+    expect(wrapper.emitted('send-message')).toBeUndefined()
+  })
+
+  it('passes confirm-action event from StudioMessage', async () => {
+    const wrapper = mount(StudioConversationPane, {
+      props: {
+        messages: [acceptanceMessage],
+        novelId: 1,
+        sending: false,
+      },
+      global: { stubs: globalStubs },
+    })
+
+    // The StudioMessage should be rendered; its action card should emit
+    const actionCard = wrapper.find('[data-testid="studio-action-card-30"]')
+    expect(actionCard.exists()).toBe(true)
+
+    await wrapper.find('[data-testid="studio-confirm-accept"]').trigger('click')
+    expect(wrapper.emitted('confirm-action')).toBeTruthy()
+    expect(wrapper.emitted('confirm-action')![0]).toEqual([30, 'accept', {}])
+  })
+})
+
+describe('StudioMessage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('renders assistant message with AI avatar', () => {
+    const wrapper = mount(StudioMessage, {
+      props: { message: assistantDraftMessage, novelId: 1 },
+      global: { stubs: globalStubs },
+    })
+
+    expect(wrapper.find('[data-testid="studio-message-21"]').exists()).toBe(true)
+    expect(wrapper.find('.studio-msg__avatar--assistant').exists()).toBe(true)
+  })
+
+  it('shows running spinner for running messages', () => {
+    const runningMsg: WritingMessage = {
+      ...assistantDraftMessage,
+      id: 50,
+      action_status: 'running',
+    }
+    const wrapper = mount(StudioMessage, {
+      props: { message: runningMsg, novelId: 1 },
+      global: { stubs: globalStubs },
+    })
+
+    expect(wrapper.find('.studio-msg__running').exists()).toBe(true)
+  })
+
+  it('shows error state with retry button for failed messages', () => {
+    const wrapper = mount(StudioMessage, {
+      props: { message: failedMessage, novelId: 1 },
+      global: { stubs: globalStubs },
+    })
+
+    expect(wrapper.find('[data-testid="studio-retry-btn"]').exists()).toBe(true)
+  })
+
+  it('emits retry-message when retry button is clicked', async () => {
+    const wrapper = mount(StudioMessage, {
+      props: { message: failedMessage, novelId: 1 },
+      global: { stubs: globalStubs },
+    })
+
+    await wrapper.find('[data-testid="studio-retry-btn"]').trigger('click')
+    expect(wrapper.emitted('retry-message')).toBeTruthy()
+    expect(wrapper.emitted('retry-message')![0]).toEqual([40])
+  })
+
+  it('shows type badge for non-text messages', () => {
+    const wrapper = mount(StudioMessage, {
+      props: { message: assistantDraftMessage, novelId: 1 },
+      global: { stubs: globalStubs },
+    })
+
+    // draft type should show a badge
+    expect(wrapper.find('.studio-msg__type-badge').exists()).toBe(true)
+  })
+
+  it('hides type badge for plain text messages', () => {
+    const wrapper = mount(StudioMessage, {
+      props: { message: authorMessage, novelId: 1 },
+      global: { stubs: globalStubs },
+    })
+
+    expect(wrapper.find('.studio-msg__type-badge').exists()).toBe(false)
+  })
+
+  it('renders sources trigger for messages with writing_run_id', () => {
+    const wrapper = mount(StudioMessage, {
+      props: { message: assistantDraftMessage, novelId: 1 },
+      global: { stubs: globalStubs },
+    })
+
+    expect(wrapper.find('[data-testid="studio-sources-trigger-21"]').exists()).toBe(true)
+  })
+
+  it('does not render sources trigger for messages without writing_run_id', () => {
+    const wrapper = mount(StudioMessage, {
+      props: { message: authorMessage, novelId: 1 },
+      global: { stubs: globalStubs },
+    })
+
+    expect(wrapper.find('[data-testid="studio-sources-trigger-10"]').exists()).toBe(false)
+  })
+})
+
+describe('StudioActionCard', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('does not emit accept until the author clicks the confirmation button', async () => {
+    const wrapper = mount(StudioActionCard, {
+      props: { message: acceptanceMessage },
+      global: { stubs: globalStubs },
+    })
+
+    expect(wrapper.emitted('confirm-action')).toBeUndefined()
+    await wrapper.find('[data-testid="studio-confirm-accept"]').trigger('click')
+    expect(wrapper.emitted('confirm-action')?.[0]).toEqual([30, 'accept', {}])
+  })
+
+  it('emits discard when discard button is clicked', async () => {
+    const wrapper = mount(StudioActionCard, {
+      props: { message: acceptanceMessage },
+      global: { stubs: globalStubs },
+    })
+
+    await wrapper.find('[data-testid="studio-confirm-discard"]').trigger('click')
+    expect(wrapper.emitted('confirm-action')?.[0]).toEqual([30, 'discard', {}])
+  })
+
+  it('renders custom actions from content_json.actions', () => {
+    const customActionMessage: WritingMessage = {
+      ...acceptanceMessage,
+      id: 35,
+      content_json: {
+        text: '选择修订方式',
+        prompt: '选择修订方式',
+        actions: ['apply_revision', 'force_accept', 'restore_version'],
+      },
+    }
+    const wrapper = mount(StudioActionCard, {
+      props: { message: customActionMessage },
+      global: { stubs: globalStubs },
+    })
+
+    expect(wrapper.find('[data-testid="studio-confirm-apply_revision"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="studio-confirm-force_accept"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="studio-confirm-restore_version"]').exists()).toBe(true)
+  })
+
+  it('defaults to accept and discard when no actions specified', () => {
+    const noActionsMessage: WritingMessage = {
+      ...acceptanceMessage,
+      content_json: { text: '确认', prompt: '确认' },
+    }
+    const wrapper = mount(StudioActionCard, {
+      props: { message: noActionsMessage },
+      global: { stubs: globalStubs },
+    })
+
+    expect(wrapper.find('[data-testid="studio-confirm-accept"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="studio-confirm-discard"]').exists()).toBe(true)
   })
 })

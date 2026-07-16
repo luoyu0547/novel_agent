@@ -5,8 +5,9 @@ import { useNovelStore } from '@/stores/novels'
 import { useWritingStudioStore } from '@/stores/writingStudio'
 import StudioChapterExplorer from '@/components/studio/StudioChapterExplorer.vue'
 import StudioDocumentPane from '@/components/studio/StudioDocumentPane.vue'
+import StudioConversationPane from '@/components/studio/StudioConversationPane.vue'
 import StudioVersionInspector from '@/components/studio/StudioVersionInspector.vue'
-import type { WritingSession, StudioDocument } from '@/types/writingStudio'
+import type { WritingSession, StudioDocument, StudioConfirmationAction } from '@/types/writingStudio'
 
 const route = useRoute()
 const router = useRouter()
@@ -147,15 +148,52 @@ async function handleSaveWorkingCopy(payload: { title: string; content: string; 
   }
 }
 
-function handleAccept() {
-  // Delegate to store confirmAction with 'accept'
-  // This will be wired up fully when the assistant panel is built
+async function handleAccept() {
+  if (studioStore.session) {
+    // Find the latest needs_confirmation message
+    const pending = [...studioStore.messages].reverse().find(m => m.action_status === 'needs_confirmation')
+    if (pending) {
+      await studioStore.confirmAction(novelId.value, pending.id, 'accept')
+    }
+  }
 }
 
-function handleDiscard() {
-  // Delegate to store confirmAction with 'discard'
-  // This will be wired up fully when the assistant panel is built
+async function handleDiscard() {
+  if (studioStore.session) {
+    const pending = [...studioStore.messages].reverse().find(m => m.action_status === 'needs_confirmation')
+    if (pending) {
+      await studioStore.confirmAction(novelId.value, pending.id, 'discard')
+    }
+  }
 }
+
+// Conversation pane event handlers
+async function handleSendMessage(text: string) {
+  await studioStore.sendMessage(novelId.value, text)
+}
+
+async function handleConfirmAction(messageId: number, action: StudioConfirmationAction, payload: Record<string, unknown>) {
+  await studioStore.confirmAction(novelId.value, messageId, action, payload)
+}
+
+function handleOpenSources(writingRunId: number) {
+  // Sources are rendered inline in StudioMessage via StudioSourcesPanel
+  // This handler is available for future top-level source navigation
+}
+
+async function handleRetryMessage(messageId: number) {
+  // Retry: re-send the original author message that preceded the failed one
+  const idx = studioStore.messages.findIndex(m => m.id === messageId)
+  if (idx > 0) {
+    const prev = studioStore.messages[idx - 1]
+    if (prev && prev.role === 'author' && prev.content_json?.text) {
+      await studioStore.sendMessage(novelId.value, prev.content_json.text as string)
+    }
+  }
+}
+
+// Sending state derived from store
+const sending = ref(false)
 
 function handleOpenVersionInspector() {
   versionInspectorVisible.value = true
@@ -226,11 +264,17 @@ defineExpose({ toggleLeftPane, toggleRightPane })
         />
       </main>
 
-      <!-- Right pane: Assistant / context panel -->
+      <!-- Right pane: AI conversation -->
       <aside v-if="rightPaneVisible" class="studio__right-pane" data-testid="studio-right-pane">
-        <div class="studio__assistant-placeholder">
-          <p>助手面板</p>
-        </div>
+        <StudioConversationPane
+          :messages="studioStore.messages"
+          :novel-id="novelId"
+          :sending="sending"
+          @send-message="handleSendMessage"
+          @confirm-action="handleConfirmAction"
+          @open-sources="handleOpenSources"
+          @retry-message="handleRetryMessage"
+        />
       </aside>
     </div>
 
@@ -256,11 +300,18 @@ defineExpose({ toggleLeftPane, toggleRightPane })
       direction="rtl"
       size="380px"
       :with-header="false"
+      data-testid="studio-ai-drawer"
       class="studio__right-drawer"
     >
-      <div class="studio__assistant-placeholder">
-        <p>助手面板</p>
-      </div>
+      <StudioConversationPane
+        :messages="studioStore.messages"
+        :novel-id="novelId"
+        :sending="sending"
+        @send-message="handleSendMessage"
+        @confirm-action="handleConfirmAction"
+        @open-sources="handleOpenSources"
+        @retry-message="handleRetryMessage"
+      />
     </el-drawer>
 
     <!-- Version inspector drawer -->
@@ -343,16 +394,6 @@ defineExpose({ toggleLeftPane, toggleRightPane })
     background: $color-bg-card;
     border-left: 1px solid $color-border;
     overflow-y: auto;
-  }
-
-  &__editor-placeholder,
-  &__assistant-placeholder {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    color: $color-text-placeholder;
-    font-size: $font-size-sm;
   }
 
   // Hide drawers at desktop sizes; they show at mobile sizes
