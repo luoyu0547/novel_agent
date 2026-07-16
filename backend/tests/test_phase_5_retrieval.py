@@ -999,3 +999,514 @@ async def test_indexer_never_indexes_draft_chapters(db):
 
     result = await indexer.sync(novel.id, user.id)
     assert result.upserted == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Worker, mutation enqueue points, and index-control API
+# ---------------------------------------------------------------------------
+
+import asyncio
+from app.retrieval.contracts import RetrievalUnavailable
+from app.retrieval.indexer import NovelIndexer
+
+
+class FakeIndexer:
+    """Fake indexer for worker tests. Records calls and can raise errors."""
+
+    def __init__(self, *, raise_unavailable=False, raise_generic=False):
+        self.sync_calls: list[tuple[int, int]] = []
+        self.purge_calls: list[str] = []
+        self._raise_unavailable = raise_unavailable
+        self._raise_generic = raise_generic
+
+    async def sync(self, novel_id: int, user_id: int):
+        self.sync_calls.append((novel_id, user_id))
+        if self._raise_unavailable:
+            raise RetrievalUnavailable("embedding service down")
+        if self._raise_generic:
+            raise RuntimeError("unexpected error")
+
+    async def purge(self, tenant_key: str):
+        self.purge_calls.append(tenant_key)
+        if self._raise_unavailable:
+            raise RetrievalUnavailable("qdrant down")
+        if self._raise_generic:
+            raise RuntimeError("unexpected error")
+
+
+def fake_session_factory(db):
+    """Return a callable that yields the same db session (for worker tests)."""
+    class _Factory:
+        async def __aenter__(self):
+            return db
+        async def __aexit__(self, *args):
+            pass
+    return lambda: _Factory()
+
+
+# -- Worker tests -----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_worker_completes_sync_job(db):
+    from app.retrieval.worker import RetrievalWorker
+    user, novel = await make_user_and_novel(db)
+    job = await RetrievalIndexService(db).enqueue_sync(novel.id, user.id)
+    indexer = FakeIndexer()
+    worker = RetrievalWorker(session_factory=fake_session_factory(db), indexer=indexer)
+    claimed = await worker.run_once()
+    assert claimed is True
+    # Refresh job from DB
+    await db.refresh(job)
+    assert job.status == "completed"
+    assert len(indexer.sync_calls) == 1
+    assert indexer.sync_calls[0] == (novel.id, user.id)
+
+
+@pytest.mark.asyncio
+async def test_worker_completes_purge_job(db):
+    from app.retrieval.worker import RetrievalWorker
+    user, novel = await make_user_and_novel(db)
+    job = await RetrievalIndexService(db).enqueue_purge(novel.id, user.id)
+    indexer = FakeIndexer()
+    worker = RetrievalWorker(session_factory=fake_session_factory(db), indexer=indexer)
+    claimed = await worker.run_once()
+    assert claimed is True
+    await db.refresh(job)
+    assert job.status == "completed"
+    assert len(indexer.purge_calls) == 1
+    assert indexer.purge_calls[0] == f"{user.id}:{novel.id}"
+
+
+@pytest.mark.asyncio
+async def test_worker_retries_on_unavailable(db):
+    from app.retrieval.worker import RetrievalWorker
+    user, novel = await make_user_and_novel(db)
+    job = await RetrievalIndexService(db).enqueue_sync(novel.id, user.id)
+    indexer = FakeIndexer(raise_unavailable=True)
+    worker = RetrievalWorker(session_factory=fake_session_factory(db), indexer=indexer)
+    claimed = await worker.run_once()
+    assert claimed is True
+    await db.refresh(job)
+    assert job.status == "retry_wait"
+    assert job.attempt_count == 1
+    assert "embedding service down" in job.last_error
+
+
+@pytest.mark.asyncio
+async def test_worker_retries_on_generic_exception(db):
+    from app.retrieval.worker import RetrievalWorker
+    user, novel = await make_user_and_novel(db)
+    job = await RetrievalIndexService(db).enqueue_sync(novel.id, user.id)
+    indexer = FakeIndexer(raise_generic=True)
+    worker = RetrievalWorker(session_factory=fake_session_factory(db), indexer=indexer)
+    claimed = await worker.run_once()
+    assert claimed is True
+    await db.refresh(job)
+    assert job.status == "retry_wait"
+    assert job.attempt_count == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_returns_false_when_no_jobs(db):
+    from app.retrieval.worker import RetrievalWorker
+    indexer = FakeIndexer()
+    worker = RetrievalWorker(session_factory=fake_session_factory(db), indexer=indexer)
+    claimed = await worker.run_once()
+    assert claimed is False
+
+
+# -- Enqueue-after-mutation tests (integration via HTTP) --------------------
+
+
+async def _register_and_login(client, username="testuser"):
+    """Register a user and return (user_id, auth_headers)."""
+    resp = await client.post("/api/v1/auth/register", json={
+        "username": username, "password": "pass1234"
+    })
+    data = resp.json()
+    token = data["data"]["token"]
+    user_id = data["data"]["user_id"]
+    return user_id, {"Authorization": f"Bearer {token}"}
+
+
+async def _create_novel(client, headers, title="测试小说"):
+    resp = await client.post("/api/v1/novels", json={"title": title}, headers=headers)
+    return resp.json()["data"]["id"]
+
+
+async def _create_chapter(client, novel_id, headers, title="章节", content="", summary=""):
+    resp = await client.post(
+        f"/api/v1/novels/{novel_id}/chapters",
+        json={"title": title, "content": content, "summary": summary},
+        headers=headers,
+    )
+    return resp.json()["data"]["id"]
+
+
+async def _publish_chapter(client, novel_id, chapter_id, headers):
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/chapters/{chapter_id}/publish",
+        json={},
+        headers=headers,
+    )
+    return resp
+
+
+async def _count_pending_sync_jobs(db, novel_id, user_id):
+    """Count pending/running/retry_wait sync or rebuild jobs for a novel."""
+    tenant_key = f"{user_id}:{novel_id}"
+    repo = RetrievalIndexRepo(db)
+    job = await repo.find_active_by_tenant_key(tenant_key)
+    return 1 if job else 0
+
+
+@pytest.mark.asyncio
+async def test_publish_chapter_enqueues_sync(client, db):
+    user_id, headers = await _register_and_login(client)
+    novel_id = await _create_novel(client, headers)
+    chapter_id = await _create_chapter(client, novel_id, headers, content="内容", summary="摘要")
+    await _publish_chapter(client, novel_id, chapter_id, headers)
+    count = await _count_pending_sync_jobs(db, novel_id, user_id)
+    assert count >= 1
+
+
+@pytest.mark.asyncio
+async def test_character_crud_enqueues_sync(client, db):
+    user_id, headers = await _register_and_login(client)
+    novel_id = await _create_novel(client, headers)
+
+    # Create character
+    resp = await client.post(
+        f"/api/v1/novels/{novel_id}/characters",
+        json={"name": "沈砚", "identity": "将军"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    count = await _count_pending_sync_jobs(db, novel_id, user_id)
+    assert count >= 1
+
+    # Complete the job so we can test update
+    service = RetrievalIndexService(db)
+    job = await service.repo.find_active_by_tenant_key(f"{user_id}:{novel_id}")
+    await service.repo.complete(job)
+    await db.commit()
+
+    # Update character
+    char_id = resp.json()["data"]["id"]
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/characters/{char_id}",
+        json={"personality": "沉稳"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    count = await _count_pending_sync_jobs(db, novel_id, user_id)
+    assert count >= 1
+
+    # Complete the job so we can test delete
+    job = await service.repo.find_active_by_tenant_key(f"{user_id}:{novel_id}")
+    await service.repo.complete(job)
+    await db.commit()
+
+    # Delete character
+    resp = await client.delete(
+        f"/api/v1/novels/{novel_id}/characters/{char_id}",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    count = await _count_pending_sync_jobs(db, novel_id, user_id)
+    assert count >= 1
+
+
+@pytest.mark.asyncio
+async def test_world_setting_crud_enqueues_sync(client, db):
+    user_id, headers = await _register_and_login(client)
+    novel_id = await _create_novel(client, headers)
+
+    # Create setting
+    resp = await client.post(
+        f"/api/v1/novels/{novel_id}/settings",
+        json={"title": "北境", "category": "geography", "content": "苦寒之地"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    count = await _count_pending_sync_jobs(db, novel_id, user_id)
+    assert count >= 1
+
+    # Complete the job
+    service = RetrievalIndexService(db)
+    job = await service.repo.find_active_by_tenant_key(f"{user_id}:{novel_id}")
+    await service.repo.complete(job)
+    await db.commit()
+
+    # Update setting
+    setting_id = resp.json()["data"]["id"]
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/settings/{setting_id}",
+        json={"content": "冰原"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    count = await _count_pending_sync_jobs(db, novel_id, user_id)
+    assert count >= 1 >= 1
+
+    # Complete the job
+    job = await service.repo.find_active_by_tenant_key(f"{user_id}:{novel_id}")
+    await service.repo.complete(job)
+    await db.commit()
+
+    # Delete setting
+    resp = await client.delete(
+        f"/api/v1/novels/{novel_id}/settings/{setting_id}",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    count = await _count_pending_sync_jobs(db, novel_id, user_id)
+    assert count >= 1
+
+
+@pytest.mark.asyncio
+async def test_pending_memory_confirm_enqueues_sync(client, db):
+    user_id, headers = await _register_and_login(client)
+    novel_id = await _create_novel(client, headers)
+    chapter_id = await _create_chapter(client, novel_id, headers, content="内容", summary="摘要")
+    await _publish_chapter(client, novel_id, chapter_id, headers)
+
+    # Complete the publish sync job first
+    service = RetrievalIndexService(db)
+    job = await service.repo.find_active_by_tenant_key(f"{user_id}:{novel_id}")
+    if job:
+        await service.repo.complete(job)
+        await db.commit()
+
+    # Create a pending memory directly in DB
+    from app.models.pending_memory import PendingMemory
+    pm = PendingMemory(
+        novel_id=novel_id, chapter_id=chapter_id,
+        memory_type="character", content={"name": "新角色"}, status="pending",
+    )
+    db.add(pm)
+    await db.commit()
+    await db.refresh(pm)
+
+    # Confirm it
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/pending-memories/{pm.id}/confirm",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    count = await _count_pending_sync_jobs(db, novel_id, user_id)
+    assert count >= 1
+
+
+@pytest.mark.asyncio
+async def test_pending_memory_reject_does_not_enqueue(client, db):
+    user_id, headers = await _register_and_login(client)
+    novel_id = await _create_novel(client, headers)
+    chapter_id = await _create_chapter(client, novel_id, headers, content="内容", summary="摘要")
+    await _publish_chapter(client, novel_id, chapter_id, headers)
+
+    # Complete the publish sync job first
+    service = RetrievalIndexService(db)
+    job = await service.repo.find_active_by_tenant_key(f"{user_id}:{novel_id}")
+    if job:
+        await service.repo.complete(job)
+        await db.commit()
+
+    # Create a pending memory directly in DB
+    from app.models.pending_memory import PendingMemory
+    pm = PendingMemory(
+        novel_id=novel_id, chapter_id=chapter_id,
+        memory_type="character", content={"name": "新角色"}, status="pending",
+    )
+    db.add(pm)
+    await db.commit()
+    await db.refresh(pm)
+
+    # Reject it
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/pending-memories/{pm.id}/reject",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    count = await _count_pending_sync_jobs(db, novel_id, user_id)
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_batch_confirm_enqueues_sync_once(client, db):
+    user_id, headers = await _register_and_login(client)
+    novel_id = await _create_novel(client, headers)
+    chapter_id = await _create_chapter(client, novel_id, headers, content="内容", summary="摘要")
+    await _publish_chapter(client, novel_id, chapter_id, headers)
+
+    # Complete the publish sync job first
+    service = RetrievalIndexService(db)
+    job = await service.repo.find_active_by_tenant_key(f"{user_id}:{novel_id}")
+    if job:
+        await service.repo.complete(job)
+        await db.commit()
+
+    # Create two pending memories directly in DB
+    from app.models.pending_memory import PendingMemory
+    pm1 = PendingMemory(
+        novel_id=novel_id, chapter_id=chapter_id,
+        memory_type="character", content={"name": "角色1"}, status="pending",
+    )
+    pm2 = PendingMemory(
+        novel_id=novel_id, chapter_id=chapter_id,
+        memory_type="world_setting", content={"title": "设定1"}, status="pending",
+    )
+    db.add_all([pm1, pm2])
+    await db.commit()
+    await db.refresh(pm1)
+    await db.refresh(pm2)
+
+    # Batch confirm
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/pending-memories/batch",
+        json={"ids": [pm1.id, pm2.id], "action": "confirm"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    # Should enqueue exactly one sync job (deduplication)
+    count = await _count_pending_sync_jobs(db, novel_id, user_id)
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_reject_does_not_enqueue(client, db):
+    user_id, headers = await _register_and_login(client)
+    novel_id = await _create_novel(client, headers)
+    chapter_id = await _create_chapter(client, novel_id, headers, content="内容", summary="摘要")
+    await _publish_chapter(client, novel_id, chapter_id, headers)
+
+    # Complete the publish sync job first
+    service = RetrievalIndexService(db)
+    job = await service.repo.find_active_by_tenant_key(f"{user_id}:{novel_id}")
+    if job:
+        await service.repo.complete(job)
+        await db.commit()
+
+    # Create two pending memories directly in DB
+    from app.models.pending_memory import PendingMemory
+    pm1 = PendingMemory(
+        novel_id=novel_id, chapter_id=chapter_id,
+        memory_type="character", content={"name": "角色1"}, status="pending",
+    )
+    pm2 = PendingMemory(
+        novel_id=novel_id, chapter_id=chapter_id,
+        memory_type="world_setting", content={"title": "设定1"}, status="pending",
+    )
+    db.add_all([pm1, pm2])
+    await db.commit()
+    await db.refresh(pm1)
+    await db.refresh(pm2)
+
+    # Batch reject
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/pending-memories/batch",
+        json={"ids": [pm1.id, pm2.id], "action": "reject"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    count = await _count_pending_sync_jobs(db, novel_id, user_id)
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_novel_enqueues_purge(client, db):
+    user_id, headers = await _register_and_login(client)
+    novel_id = await _create_novel(client, headers)
+
+    resp = await client.delete(f"/api/v1/novels/{novel_id}", headers=headers)
+    assert resp.status_code == 200
+
+    # Check that a purge job was enqueued
+    tenant_key = f"{user_id}:{novel_id}"
+    repo = RetrievalIndexRepo(db)
+    job = await repo.find_active_purge_by_tenant_key(tenant_key)
+    assert job is not None
+    assert job.operation == "purge"
+
+
+@pytest.mark.asyncio
+async def test_draft_chapter_update_does_not_enqueue(client, db):
+    """Updating a draft chapter (not publish) should NOT enqueue a sync job."""
+    user_id, headers = await _register_and_login(client)
+    novel_id = await _create_novel(client, headers)
+    chapter_id = await _create_chapter(client, novel_id, headers, content="草稿", summary="摘要")
+
+    # Update the draft chapter
+    resp = await client.put(
+        f"/api/v1/novels/{novel_id}/chapters/{chapter_id}",
+        json={"content": "修改后的草稿"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    count = await _count_pending_sync_jobs(db, novel_id, user_id)
+    assert count == 0
+
+
+# -- API endpoint tests -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retrieval_status_endpoint(client, db):
+    user_id, headers = await _register_and_login(client)
+    novel_id = await _create_novel(client, headers)
+
+    # No jobs yet — should return null data
+    resp = await client.get(f"/api/v1/novels/{novel_id}/retrieval-index", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data is None
+
+    # Enqueue a sync job
+    await RetrievalIndexService(db).enqueue_sync(novel_id, user_id)
+
+    resp = await client.get(f"/api/v1/novels/{novel_id}/retrieval-index", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data is not None
+    assert data["status"] in ("pending", "running")
+    assert data["operation"] == "sync"
+
+
+@pytest.mark.asyncio
+async def test_rebuild_endpoint_creates_job(client, db):
+    user_id, headers = await _register_and_login(client)
+    novel_id = await _create_novel(client, headers)
+
+    resp = await client.post(f"/api/v1/novels/{novel_id}/retrieval-index/rebuild", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["job_id"] is not None
+    assert data["status"] in ("pending", "running")
+
+
+@pytest.mark.asyncio
+async def test_retrieval_status_hides_other_users_novel(client, db):
+    user1_id, headers1 = await _register_and_login(client, "user1")
+    user2_id, headers2 = await _register_and_login(client, "user2")
+    novel_id = await _create_novel(client, headers1)
+
+    resp = await client.get(f"/api/v1/novels/{novel_id}/retrieval-index", headers=headers2)
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_rebuild_endpoint_hides_other_users_novel(client, db):
+    user1_id, headers1 = await _register_and_login(client, "user1")
+    user2_id, headers2 = await _register_and_login(client, "user2")
+    novel_id = await _create_novel(client, headers1)
+
+    resp = await client.post(f"/api/v1/novels/{novel_id}/retrieval-index/rebuild", headers=headers2)
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_retrieval_status_returns_404_for_missing_novel(client, db):
+    _, headers = await _register_and_login(client)
+    resp = await client.get("/api/v1/novels/99999/retrieval-index", headers=headers)
+    assert resp.status_code == 404

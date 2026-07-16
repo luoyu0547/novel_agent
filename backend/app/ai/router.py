@@ -66,6 +66,9 @@ async def confirm_pending_memory(
     if not memory or memory.novel_id != novel_id:
         raise NotFound("待确认记忆不存在")
     await repo.confirm(memory)
+    # Enqueue sync after confirmation commits canonical data
+    from app.services.retrieval_index_service import RetrievalIndexService
+    await RetrievalIndexService(db).enqueue_sync(novel_id, current_user.id)
     return ApiResponse.success(message="已确认并写入正式记忆")
 
 
@@ -82,6 +85,7 @@ async def reject_pending_memory(
     if not memory or memory.novel_id != novel_id:
         raise NotFound("待确认记忆不存在")
     await repo.reject(memory)
+    # Do NOT enqueue on rejection — no canonical data changed
     return ApiResponse.success(message="已拒绝")
 
 
@@ -95,11 +99,17 @@ async def batch_pending_memories(
     await NovelService(db).get(novel_id, current_user.id)
     repo = PendingMemoryRepo(db)
     memories = await repo.get_many(body.ids)
+    confirmed_any = False
     for memory in memories:
         if memory.novel_id != novel_id:
             continue
         if body.action == "confirm":
             await repo.confirm(memory)
+            confirmed_any = True
         elif body.action == "reject":
             await repo.reject(memory)
+    # Enqueue sync once after all confirmations for this novel
+    if confirmed_any:
+        from app.services.retrieval_index_service import RetrievalIndexService
+        await RetrievalIndexService(db).enqueue_sync(novel_id, current_user.id)
     return ApiResponse.success(message=f"批量{body.action}完成")

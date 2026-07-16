@@ -41,6 +41,9 @@ class NovelService:
             raise NotFound("小说不存在")
         if novel.user_id != user_id:
             raise Forbidden("无权删除该小说")
+        # Enqueue purge BEFORE deleting the novel row so the job survives deletion
+        from app.services.retrieval_index_service import RetrievalIndexService
+        await RetrievalIndexService(self.db).enqueue_purge(novel_id, user_id)
         await self.repo.delete(novel)
 
     async def create_chapter(self, user_id: int, novel_id: int, title: str, content: str = "", summary: str = "", status: str = "draft"):
@@ -69,7 +72,13 @@ class NovelService:
         chapter = await self.chapter_repo.get_by_id(chapter_id)
         if not chapter or chapter.novel_id != novel_id:
             raise NotFound("章节不存在")
-        return await self.chapter_repo.update(chapter, title, content, summary, status)
+        was_locked = chapter.status == "locked"
+        result = await self.chapter_repo.update(chapter, title, content, summary, status)
+        # Enqueue sync if the chapter is or was locked (canonical content may have changed)
+        if result.status == "locked" or was_locked:
+            from app.services.retrieval_index_service import RetrievalIndexService
+            await RetrievalIndexService(self.db).enqueue_sync(novel_id, user_id)
+        return result
 
     async def delete_chapter(self, user_id: int, novel_id: int, chapter_id: int):
         novel = await self.repo.get_by_id(novel_id)
@@ -80,7 +89,12 @@ class NovelService:
         chapter = await self.chapter_repo.get_by_id(chapter_id)
         if not chapter or chapter.novel_id != novel_id:
             raise NotFound("章节不存在")
+        was_locked = chapter.status == "locked"
         await self.chapter_repo.delete(chapter)
+        # Enqueue sync if the deleted chapter was locked (canonical content removed)
+        if was_locked:
+            from app.services.retrieval_index_service import RetrievalIndexService
+            await RetrievalIndexService(self.db).enqueue_sync(novel_id, user_id)
 
     async def publish_chapter(self, user_id: int, novel_id: int, chapter_id: int):
         novel = await self.repo.get_by_id(novel_id)
@@ -108,4 +122,9 @@ class NovelService:
         chapter.status = "locked"
         await self.db.commit()
         await self.db.refresh(chapter)
+
+        # Enqueue sync AFTER the canonical commit
+        from app.services.retrieval_index_service import RetrievalIndexService
+        await RetrievalIndexService(self.db).enqueue_sync(novel_id, user_id)
+
         return chapter
