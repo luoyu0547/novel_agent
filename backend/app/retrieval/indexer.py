@@ -147,6 +147,7 @@ class NovelIndexer:
                         "visibility": source.visibility,
                         "locator": source.locator,
                         "content_hash": source.content_hash,
+                        "importance": source.importance,
                     },
                 })
 

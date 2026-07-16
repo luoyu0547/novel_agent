@@ -658,7 +658,7 @@ class FakeVectorStore:
         for p in points:
             self.points[str(p["id"])] = p
 
-    async def hybrid_search(self, query, tenant_key, limit=10, dense_limit=20, sparse_limit=20):
+    async def hybrid_search(self, query, tenant_key, visibility="default", limit=10, dense_limit=24, sparse_limit=24):
         return []
 
     async def list_indexed_sources(self, tenant_key: str) -> list[FakeIndexedSource]:
@@ -1510,3 +1510,542 @@ async def test_retrieval_status_returns_404_for_missing_novel(client, db):
     _, headers = await _register_and_login(client)
     resp = await client.get("/api/v1/novels/99999/retrieval-index", headers=headers)
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Hybrid retrieval service with writer/guard separation and fallback
+# ---------------------------------------------------------------------------
+
+from app.retrieval.contracts import (
+    RetrievedSource,
+    RetrievalRequest,
+    RetrievalContext,
+)
+from app.retrieval.service import RetrievalService
+
+
+# -- Helpers for Task 5 service tests ---------------------------------------
+
+
+def _make_retrieved_source(
+    *,
+    source_id: str,
+    source_type: str,
+    title: str,
+    preview: str = "",
+    locator: dict | None = None,
+    visibility: str = "default",
+    chapter_id: int | None = None,
+    importance: str = "minor",
+) -> RetrievedSource:
+    """Build a RetrievedSource with sensible defaults for tests."""
+    if locator is None:
+        if source_type == "chapter_scene":
+            locator = {"chapter_id": chapter_id, "type": "scene", "scene_index": 0}
+        elif source_type == "chapter_summary":
+            locator = {"chapter_id": chapter_id, "type": "summary"}
+        elif source_type == "character":
+            locator = {"character_id": int(source_id.split(":")[1])}
+        elif source_type == "plot_fact":
+            locator = {"plot_fact_id": int(source_id.split(":")[1])}
+        elif source_type == "world_setting":
+            locator = {"world_setting_id": int(source_id.split(":")[1])}
+        elif source_type in ("foreshadowing_signal", "foreshadowing_guard"):
+            locator = {"foreshadowing_id": int(source_id.split(":")[1]), "type": source_type.split("_")[1]}
+        else:
+            locator = {}
+    return RetrievedSource(
+        source_id=source_id,
+        source_type=source_type,
+        title=title,
+        preview=preview or title[:30],
+        locator=locator,
+        visibility=visibility,
+        chapter_id=chapter_id,
+        importance=importance,
+    )
+
+
+def canonical_points_for_two_novels() -> list[RetrievedSource]:
+    """Build canonical test data for two novels (tenant 1:1 and 2:1)."""
+    return [
+        # Novel 1 (user 1, novel 1) — writer-visible
+        _make_retrieved_source(
+            source_id="chapter:18:scene:3",
+            source_type="chapter_scene",
+            title="第十八章 · 场景4",
+            preview="沈砚翻阅账册，发现军饷亏空",
+            chapter_id=18,
+            importance="minor",
+        ),
+        _make_retrieved_source(
+            source_id="character:7",
+            source_type="character",
+            title="沈砚",
+            preview="将军，沉稳果决",
+        ),
+        _make_retrieved_source(
+            source_id="plot_fact:12",
+            source_type="plot_fact",
+            title="情节事实：军饷失踪",
+            preview="军饷失踪",
+            chapter_id=18,
+            importance="major",
+        ),
+        _make_retrieved_source(
+            source_id="chapter:18:scene:0",
+            source_type="chapter_scene",
+            title="第十八章 · 场景1",
+            preview="夜雨连绵",
+            chapter_id=18,
+            importance="minor",
+        ),
+        _make_retrieved_source(
+            source_id="chapter:18:scene:1",
+            source_type="chapter_scene",
+            title="第十八章 · 场景2",
+            preview="账册上的数字",
+            chapter_id=18,
+            importance="minor",
+        ),
+        _make_retrieved_source(
+            source_id="world_setting:3",
+            source_type="world_setting",
+            title="北境",
+            preview="苦寒之地，边关要塞",
+        ),
+        # Novel 1 — guard-visible
+        _make_retrieved_source(
+            source_id="foreshadowing:5:guard",
+            source_type="foreshadowing_guard",
+            title="伏笔守护：军饷暗线",
+            preview="隐藏真相：军饷被贪墨",
+            visibility="guard",
+            chapter_id=18,
+        ),
+        # Novel 2 (user 2, novel 1) — should be filtered out
+        _make_retrieved_source(
+            source_id="chapter:99:scene:0",
+            source_type="chapter_scene",
+            title="另一本小说",
+            preview="无关内容",
+            visibility="default",
+            chapter_id=99,
+        ),
+    ]
+
+
+class RetrievalFakeVectorStore:
+    """Fake VectorStore for retrieval service tests.
+
+    Stores pre-built points and supports visibility-based hybrid_search.
+    Records all (tenant_key, visibility) filter pairs for assertions.
+    """
+
+    def __init__(self, points: list[RetrievedSource]) -> None:
+        self._points = points
+        self.filters: list[tuple[str, str]] = []
+
+    async def ensure_collection(self) -> None:
+        pass
+
+    async def upsert(self, points: list[dict]) -> None:
+        pass
+
+    async def hybrid_search(
+        self,
+        query,
+        tenant_key: str,
+        visibility: str = "default",
+        limit: int = 10,
+        dense_limit: int = 24,
+        sparse_limit: int = 24,
+    ) -> list[RetrievedSource]:
+        self.filters.append((tenant_key, visibility))
+        # Map service-level visibility to stored payload visibility
+        stored_visibility = "default" if visibility == "writer" else visibility
+        # Filter points by stored visibility
+        filtered = [
+            p for p in self._points
+            if p.visibility == stored_visibility
+        ]
+        return filtered[:limit]
+
+    async def list_indexed_sources(self, tenant_key: str) -> list:
+        return []
+
+    async def delete_point_ids(self, ids: list[str]) -> None:
+        pass
+
+    async def delete_tenant(self, tenant_key: str) -> None:
+        pass
+
+
+class FakeRerankerForService:
+    """Fake Reranker that reorders results by the given index permutation."""
+
+    def __init__(self, order: list[int]) -> None:
+        """order is a list of indices specifying the desired rerank order."""
+        self._order = order
+
+    async def rerank(self, query: str, documents: list[str]) -> list[RerankResult]:
+        return [
+            RerankResult(index=idx, score=1.0 - i * 0.1)
+            for i, idx in enumerate(self._order)
+        ]
+
+
+class FailingEmbeddingProvider:
+    """EmbeddingProvider that always raises RetrievalUnavailable."""
+
+    async def embed_documents(self, texts: list[str]) -> list[HybridEmbedding]:
+        raise RetrievalUnavailable("embedding service down")
+
+    async def embed_query(self, text: str) -> HybridEmbedding:
+        raise RetrievalUnavailable("embedding service down")
+
+
+# -- Task 5: Retrieval service tests ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retrieval_uses_tenant_filter_reranks_and_limits_duplicate_scenes():
+    store = RetrievalFakeVectorStore(points=canonical_points_for_two_novels())
+    # Reranker order [2, 0, 1] means: original index 2 first, then 0, then 1
+    # Original writer candidates: [scene:3, character:7, plot_fact:12, scene:0, scene:1, world_setting:3]
+    # Reranked: [plot_fact:12, scene:3, character:7, ...]
+    reranker = FakeRerankerForService([2, 0, 1])
+    service = RetrievalService(
+        embedder=FakeEmbeddingProvider(),
+        reranker=reranker,
+        store=store,
+    )
+    result = await service.retrieve(
+        RetrievalRequest(
+            user_id=1,
+            novel_id=1,
+            query="沈砚与军饷账册",
+            target_chapter_id=19,
+        )
+    )
+    # Store should be called once with writer visibility, once with guard
+    assert store.filters == [("1:1", "writer"), ("1:1", "guard")]
+    # source_items should reflect the reranked order
+    source_ids = [item["source_id"] for item in result.source_items]
+    # Reranker put plot_fact:12 (index 2) first, then scene:3 (index 0), then character:7 (index 1)
+    assert source_ids[0] == "plot_fact:12"
+    assert source_ids[1] == "chapter:18:scene:3"
+    # No more than 2 chapter_scene items per chapter in writer_items
+    chapter_18_scenes = [
+        item for item in result.writer_items
+        if item["locator"].get("chapter_id") == 18
+        and item["source_type"] == "chapter_scene"
+    ]
+    assert len(chapter_18_scenes) <= 2
+
+
+@pytest.mark.asyncio
+async def test_guard_never_leaks_hidden_truth_into_writer_context_and_provider_failure_falls_back():
+    # Build a service where the embedding provider fails
+    store = RetrievalFakeVectorStore(points=canonical_points_for_two_novels())
+    service = RetrievalService(
+        embedder=FailingEmbeddingProvider(),
+        reranker=FakeRerankerForService([]),
+        store=store,
+    )
+    result = await service.retrieve(
+        RetrievalRequest(
+            user_id=1,
+            novel_id=1,
+            query="沈砚与军饷账册",
+            target_chapter_id=19,
+        )
+    )
+    # Fallback: empty lists
+    assert result.writer_items == []
+    assert result.guard_constraints == []
+    assert result.diagnostics["retrieval_status"] == "fallback"
+    assert result.diagnostics["reason"] == "service_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_guard_constraints_exclude_hidden_truth_from_writer():
+    """Guard items must never appear in writer_items."""
+    store = RetrievalFakeVectorStore(points=canonical_points_for_two_novels())
+    service = RetrievalService(
+        embedder=FakeEmbeddingProvider(),
+        reranker=FakeRerankerForService([0]),
+        store=store,
+    )
+    result = await service.retrieve(
+        RetrievalRequest(
+            user_id=1,
+            novel_id=1,
+            query="军饷暗线",
+            target_chapter_id=18,
+        )
+    )
+    # writer_items must NOT contain any guard-visibility source
+    writer_source_ids = {item["source_id"] for item in result.writer_items}
+    assert "foreshadowing:5:guard" not in writer_source_ids
+    # guard_constraints should contain guard source info
+    guard_ids = {c["source_id"] for c in result.guard_constraints}
+    assert "foreshadowing:5:guard" in guard_ids
+
+
+@pytest.mark.asyncio
+async def test_writer_items_respect_item_budget():
+    """writer_items should stop at the item budget (10 items)."""
+    # Build many writer-visible sources
+    many_points = [
+        _make_retrieved_source(
+            source_id=f"chapter:{i}:scene:0",
+            source_type="chapter_scene",
+            title=f"场景{i}",
+            chapter_id=i,
+        )
+        for i in range(20)
+    ]
+    store = RetrievalFakeVectorStore(points=many_points)
+    reranker = FakeRerankerForService(list(range(20)))
+    service = RetrievalService(
+        embedder=FakeEmbeddingProvider(),
+        reranker=reranker,
+        store=store,
+    )
+    result = await service.retrieve(
+        RetrievalRequest(
+            user_id=1,
+            novel_id=1,
+            query="测试",
+            target_chapter_id=1,
+        )
+    )
+    assert len(result.writer_items) <= 10
+
+
+@pytest.mark.asyncio
+async def test_guard_constraints_respect_item_budget():
+    """guard_constraints should stop at the item budget (6 items)."""
+    many_guard_points = [
+        _make_retrieved_source(
+            source_id=f"foreshadowing:{i}:guard",
+            source_type="foreshadowing_guard",
+            title=f"伏笔守护{i}",
+            visibility="guard",
+            chapter_id=1,
+        )
+        for i in range(20)
+    ]
+    store = RetrievalFakeVectorStore(points=many_guard_points)
+    service = RetrievalService(
+        embedder=FakeEmbeddingProvider(),
+        reranker=FakeRerankerForService(list(range(20))),
+        store=store,
+    )
+    result = await service.retrieve(
+        RetrievalRequest(
+            user_id=1,
+            novel_id=1,
+            query="测试",
+            target_chapter_id=1,
+        )
+    )
+    assert len(result.guard_constraints) <= 6
+
+
+@pytest.mark.asyncio
+async def test_source_items_have_no_score_fields():
+    """source_items must use to_source_item projection — no score fields."""
+    store = RetrievalFakeVectorStore(points=canonical_points_for_two_novels())
+    service = RetrievalService(
+        embedder=FakeEmbeddingProvider(),
+        reranker=FakeRerankerForService([0, 1]),
+        store=store,
+    )
+    result = await service.retrieve(
+        RetrievalRequest(
+            user_id=1,
+            novel_id=1,
+            query="测试",
+            target_chapter_id=19,
+        )
+    )
+    for item in result.source_items:
+        assert "score" not in item
+        assert "rerank_score" not in item
+        # Must have the expected projection fields
+        assert "source_id" in item
+        assert "source_type" in item
+        assert "title" in item
+        assert "locator" in item
+        assert "preview" in item
+        assert "inclusion_reason" in item
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_contain_raw_scores_and_collection_version():
+    """Diagnostics must contain raw scores, source IDs, and collection version."""
+    store = RetrievalFakeVectorStore(points=canonical_points_for_two_novels())
+    service = RetrievalService(
+        embedder=FakeEmbeddingProvider(),
+        reranker=FakeRerankerForService([0, 1]),
+        store=store,
+    )
+    result = await service.retrieve(
+        RetrievalRequest(
+            user_id=1,
+            novel_id=1,
+            query="测试",
+            target_chapter_id=19,
+        )
+    )
+    assert "collection_version" in result.diagnostics
+    assert "candidate_scores" in result.diagnostics or "writer_candidates" in result.diagnostics
+
+
+@pytest.mark.asyncio
+async def test_high_importance_facts_prioritized_over_duplicate_scenes():
+    """High-importance facts/settings should be taken before lower-ranked duplicate scenes."""
+    points = [
+        _make_retrieved_source(
+            source_id="chapter:5:scene:0",
+            source_type="chapter_scene",
+            title="场景1",
+            chapter_id=5,
+            importance="minor",
+        ),
+        _make_retrieved_source(
+            source_id="chapter:5:scene:1",
+            source_type="chapter_scene",
+            title="场景2",
+            chapter_id=5,
+            importance="minor",
+        ),
+        _make_retrieved_source(
+            source_id="chapter:5:scene:2",
+            source_type="chapter_scene",
+            title="场景3",
+            chapter_id=5,
+            importance="minor",
+        ),
+        _make_retrieved_source(
+            source_id="plot_fact:10",
+            source_type="plot_fact",
+            title="关键事实",
+            chapter_id=5,
+            importance="major",
+        ),
+        _make_retrieved_source(
+            source_id="world_setting:2",
+            source_type="world_setting",
+            title="重要设定",
+            importance="major",
+        ),
+    ]
+    store = RetrievalFakeVectorStore(points=points)
+    # Rerank: scenes first, facts later — but diversity should promote facts
+    service = RetrievalService(
+        embedder=FakeEmbeddingProvider(),
+        reranker=FakeRerankerForService([0, 1, 2, 3, 4]),
+        store=store,
+    )
+    result = await service.retrieve(
+        RetrievalRequest(
+            user_id=1,
+            novel_id=1,
+            query="关键事实",
+            target_chapter_id=5,
+        )
+    )
+    writer_ids = [item["source_id"] for item in result.writer_items]
+    # After at most 2 scenes for chapter 5, major facts should come before
+    # the 3rd scene (which would be capped by the per-chapter limit)
+    assert "plot_fact:10" in writer_ids
+    assert "world_setting:2" in writer_ids
+    # At most 2 chapter_scene for chapter 5
+    ch5_scenes = [sid for sid in writer_ids if sid.startswith("chapter:5:scene:")]
+    assert len(ch5_scenes) <= 2
+
+
+@pytest.mark.asyncio
+async def test_duplicate_source_id_rejected():
+    """Duplicate source_id should be rejected (only first occurrence kept)."""
+    points = [
+        _make_retrieved_source(
+            source_id="character:7",
+            source_type="character",
+            title="沈砚",
+        ),
+        _make_retrieved_source(
+            source_id="character:7",
+            source_type="character",
+            title="沈砚（重复）",
+        ),
+    ]
+    store = RetrievalFakeVectorStore(points=points)
+    service = RetrievalService(
+        embedder=FakeEmbeddingProvider(),
+        reranker=FakeRerankerForService([0, 1]),
+        store=store,
+    )
+    result = await service.retrieve(
+        RetrievalRequest(
+            user_id=1,
+            novel_id=1,
+            query="沈砚",
+            target_chapter_id=1,
+        )
+    )
+    source_ids = [item["source_id"] for item in result.source_items]
+    assert source_ids.count("character:7") == 1
+
+
+@pytest.mark.asyncio
+async def test_retrieval_does_not_catch_programmer_errors():
+    """Programmer errors (TypeError, ValueError, etc.) should NOT be caught."""
+    class BrokenStore:
+        async def ensure_collection(self): pass
+        async def upsert(self, points): pass
+        async def hybrid_search(self, *args, **kwargs):
+            raise TypeError("bad argument type")
+        async def list_indexed_sources(self, tenant_key): return []
+        async def delete_point_ids(self, ids): pass
+        async def delete_tenant(self, tenant_key): pass
+
+    service = RetrievalService(
+        embedder=FakeEmbeddingProvider(),
+        reranker=FakeRerankerForService([]),
+        store=BrokenStore(),
+    )
+    with pytest.raises(TypeError, match="bad argument type"):
+        await service.retrieve(
+            RetrievalRequest(
+                user_id=1,
+                novel_id=1,
+                query="测试",
+                target_chapter_id=1,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_fallback_does_not_falsely_report_sources():
+    """When retrieval falls back, source_items must also be empty."""
+    store = RetrievalFakeVectorStore(points=canonical_points_for_two_novels())
+    service = RetrievalService(
+        embedder=FailingEmbeddingProvider(),
+        reranker=FakeRerankerForService([]),
+        store=store,
+    )
+    result = await service.retrieve(
+        RetrievalRequest(
+            user_id=1,
+            novel_id=1,
+            query="测试",
+            target_chapter_id=19,
+        )
+    )
+    assert result.source_items == []
+    assert result.writer_items == []
+    assert result.guard_constraints == []

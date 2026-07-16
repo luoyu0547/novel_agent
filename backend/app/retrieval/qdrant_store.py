@@ -11,7 +11,12 @@ from typing import Any
 
 from qdrant_client import AsyncQdrantClient, models
 
-from app.retrieval.contracts import HybridEmbedding, IndexedSource, RetrievalUnavailable
+from app.retrieval.contracts import (
+    HybridEmbedding,
+    IndexedSource,
+    RetrievedSource,
+    RetrievalUnavailable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,19 +97,40 @@ class QdrantVectorStore:
         self,
         query: HybridEmbedding,
         tenant_key: str,
+        visibility: str = "default",
         limit: int = 10,
-        dense_limit: int = 20,
-        sparse_limit: int = 20,
-    ) -> list[dict]:
-        """Run a hybrid dense + sparse RRF search scoped to *tenant_key*."""
-        tenant_filter = models.Filter(
-            must=[
+        dense_limit: int = 24,
+        sparse_limit: int = 24,
+    ) -> list[RetrievedSource]:
+        """Run a hybrid dense + sparse RRF search scoped to *tenant_key*.
+
+        When *visibility* is ``"writer"``, results include sources with
+        visibility ``"default"`` only.  When ``"guard"``, only sources
+        with visibility ``"guard"`` are returned.
+        """
+        must_conditions = [
+            models.FieldCondition(
+                key="tenant_key",
+                match=models.MatchValue(value=tenant_key),
+            )
+        ]
+        # Map the service-level visibility label to the stored payload value
+        if visibility == "writer":
+            must_conditions.append(
                 models.FieldCondition(
-                    key="tenant_key",
-                    match=models.MatchValue(value=tenant_key),
+                    key="visibility",
+                    match=models.MatchValue(value="default"),
                 )
-            ]
-        )
+            )
+        elif visibility == "guard":
+            must_conditions.append(
+                models.FieldCondition(
+                    key="visibility",
+                    match=models.MatchValue(value="guard"),
+                )
+            )
+
+        tenant_filter = models.Filter(must=must_conditions)
         try:
             result = await self._client.query_points(
                 collection_name=self._collection,
@@ -130,8 +156,18 @@ class QdrantVectorStore:
                 with_payload=True,
             )
             return [
-                {"id": point.id, "score": point.score, "payload": point.payload}
+                RetrievedSource(
+                    source_id=payload.get("source_id", ""),
+                    source_type=payload.get("source_type", ""),
+                    title=payload.get("title", ""),
+                    preview=payload.get("preview", ""),
+                    locator=payload.get("locator", {}),
+                    visibility=payload.get("visibility", "default"),
+                    chapter_id=payload.get("chapter_id"),
+                    importance=payload.get("importance", "minor"),
+                )
                 for point in result.points
+                if (payload := point.payload or {})
             ]
         except Exception as exc:
             if isinstance(exc, RetrievalUnavailable):

@@ -84,6 +84,7 @@ class RetrievalSource:
     content_hash: str
     tenant_key: str
     point_id: str
+    importance: str = "minor"
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +338,7 @@ class CanonicalSourceBuilder:
                 visibility="default",
                 locator={"plot_fact_id": fact.id, "chapter_id": fact.chapter_id},
                 tenant_key=tenant_key,
+                importance=fact.importance,
             )
             sources.append(src)
 
@@ -428,6 +430,7 @@ class CanonicalSourceBuilder:
         visibility: str,
         locator: dict,
         tenant_key: str,
+        importance: str = "minor",
     ) -> RetrievalSource:
         """Create a :class:`RetrievalSource` with computed hash and point_id."""
         chash = _content_hash(text)
@@ -444,4 +447,5 @@ class CanonicalSourceBuilder:
             content_hash=chash,
             tenant_key=tenant_key,
             point_id=_point_id(tenant_key, source_id, chash),
+            importance=importance,
         )
