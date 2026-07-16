@@ -2049,3 +2049,355 @@ async def test_fallback_does_not_falsely_report_sources():
     assert result.source_items == []
     assert result.writer_items == []
     assert result.guard_constraints == []
+
+
+# ---------------------------------------------------------------------------
+# Task 6: ContextPackage enrichment and snapshot freezing
+# ---------------------------------------------------------------------------
+
+import copy
+from app.services.context_package_service import ContextPackageService
+from app.services.writing_service import WritingService
+from app.ai.writer import FakeWritingGenerator
+from app.ai.quality_gate import FakeQualityGateAgent
+from app.models.writing import NovelBlueprint, ChapterPlan, ChapterBrief
+
+
+class FakeRetrievalService:
+    """Fake RetrievalService for context package integration tests.
+
+    Returns deterministic writer_items, guard_constraints, source_items,
+    and diagnostics that match the task brief's expected shape.
+    """
+
+    async def retrieve(self, request):
+        return RetrievalContext(
+            writer_items=[
+                {
+                    "source_id": "chapter:18:scene:3",
+                    "source_type": "chapter_scene",
+                    "title": "第十八章 · 场景4",
+                    "locator": {"chapter_id": 18, "type": "scene", "scene_index": 3},
+                    "preview": "沈砚翻阅账册，发现军饷亏空",
+                    "inclusion_reason": "retrieved",
+                },
+            ],
+            guard_constraints=[
+                {
+                    "source_id": "foreshadowing:5:guard",
+                    "source_type": "foreshadowing_guard",
+                    "title": "伏笔守护：军饷暗线",
+                    "locator": {"foreshadowing_id": 5, "type": "guard"},
+                    "preview": "本章不可揭示军饷去向",
+                    "inclusion_reason": "guard_constraint",
+                },
+            ],
+            source_items=[
+                {
+                    "source_id": "chapter:18:scene:3",
+                    "source_type": "chapter_scene",
+                    "title": "第十八章 · 场景4",
+                    "locator": {"chapter_id": 18, "type": "scene", "scene_index": 3},
+                    "preview": "沈砚翻阅账册，发现军饷亏空",
+                    "inclusion_reason": "retrieved",
+                },
+                {
+                    "source_id": "foreshadowing:5:guard",
+                    "source_type": "foreshadowing_guard",
+                    "title": "伏笔守护：军饷暗线",
+                    "locator": {"foreshadowing_id": 5, "type": "guard"},
+                    "preview": "本章不可揭示军饷去向",
+                    "inclusion_reason": "guard_constraint",
+                },
+            ],
+            diagnostics={
+                "retrieval_status": "ok",
+                "collection_version": "novel-context-v1",
+            },
+        )
+
+
+class FailingRetrievalService:
+    """RetrievalService that raises an exception, simulating unavailable retrieval."""
+
+    async def retrieve(self, request):
+        raise RuntimeError("retrieval infrastructure down")
+
+
+# -- Task 6: Context package enrichment tests --------------------------------
+
+
+async def _setup_writing_data(db):
+    """Create user, novel, blueprint, plan, brief for writing tests."""
+    user = User(username="ctx_pkg_user", hashed_password="hash")
+    db.add(user)
+    await db.flush()
+    novel = Novel(user_id=user.id, title="上下文包测试小说", genre="古风", style_guide="第三人称")
+    db.add(novel)
+    await db.flush()
+
+    blueprint = NovelBlueprint(novel_id=novel.id, content_json={"core_promise": "测试"}, status="active")
+    db.add(blueprint)
+    await db.flush()
+
+    plan = ChapterPlan(novel_id=novel.id, content_json={"plot_task": "测试任务"}, position=1, status="ready")
+    db.add(plan)
+    await db.flush()
+
+    brief = ChapterBrief(
+        novel_id=novel.id,
+        chapter_plan_id=plan.id,
+        brief_json={"acceptance_criteria": "测试标准"},
+        length_contract_json={"target_words": 3000, "min_words": 2000, "max_words": 5000},
+        status="ready",
+    )
+    db.add(brief)
+    await db.commit()
+    return user, novel, blueprint, plan, brief
+
+
+@pytest.mark.asyncio
+async def test_context_package_includes_retrieval_and_safe_guard_snapshot(db, monkeypatch):
+    """ContextPackageService.build_for_brief() should enrich the package with
+    retrieved_context, risk_guard, and snapshot.source_items/diagnostics."""
+    user, novel, blueprint, plan, brief = await _setup_writing_data(db)
+
+    # Set up plot planning data required by build_for_brief
+    from app.models.plot_planning import AuthorFoundation, AuthorFoundationRevision, PlotUnit, PlotPlanRevision
+    foundation = AuthorFoundation(
+        novel_id=novel.id, outline="大纲", current_intent="意图",
+        stage_goal="目标", constraints_json={}, version=1,
+    )
+    db.add(foundation)
+    await db.flush()
+    revision = AuthorFoundationRevision(
+        novel_id=novel.id, foundation_id=foundation.id, version=1,
+        snapshot_json={}, change_reason="initial",
+    )
+    db.add(revision)
+    await db.flush()
+    plot_unit = PlotUnit(
+        novel_id=novel.id, title="第一卷：边城旧案", scope_type="volume",
+        start_position=1, end_position=5, author_goal="查清密令来源",
+        start_state="抵达", end_state="确认", foundation_revision_id=revision.id, status="draft",
+    )
+    db.add(plot_unit)
+    await db.flush()
+    plan_revision = PlotPlanRevision(
+        novel_id=novel.id, plot_unit_id=plot_unit.id,
+        foundation_revision_id=revision.id, version=1,
+        plan_json={"core_conflict": "调查触动守城势力"},
+        change_reason="initial generation", status="active",
+    )
+    db.add(plan_revision)
+    await db.commit()
+
+    fake_retrieval = FakeRetrievalService()
+    service = ContextPackageService(db, user_id=user.id, novel_id=novel.id, retrieval=fake_retrieval)
+    package = await service.build_for_brief(
+        brief_id=brief.id,
+        plot_plan_revision_id=plan_revision.id,
+        author_input="军饷",
+    )
+
+    # Retrieved context should contain writer items
+    assert package["retrieved_context"][0]["source_id"] == "chapter:18:scene:3"
+    # Risk guard should contain guard constraints
+    assert package["risk_guard"][0]["preview"].startswith("本章不可")
+    # Snapshot should contain source_items and diagnostics
+    assert package["snapshot"]["source_items"][0]["source_id"] == "chapter:18:scene:3"
+    assert package["snapshot"]["diagnostics"]["retrieval_status"] == "ok"
+    # hidden_truth must NOT appear in retrieved_context (writer items)
+    assert "hidden_truth" not in str(package["retrieved_context"])
+
+
+@pytest.mark.asyncio
+async def test_context_package_falls_back_when_retrieval_unavailable(db, monkeypatch):
+    """When retrieval fails, the package should still have valid empty fields."""
+    user, novel, blueprint, plan, brief = await _setup_writing_data(db)
+
+    from app.models.plot_planning import AuthorFoundation, AuthorFoundationRevision, PlotUnit, PlotPlanRevision
+    foundation = AuthorFoundation(
+        novel_id=novel.id, outline="大纲", current_intent="意图",
+        stage_goal="目标", constraints_json={}, version=1,
+    )
+    db.add(foundation)
+    await db.flush()
+    revision = AuthorFoundationRevision(
+        novel_id=novel.id, foundation_id=foundation.id, version=1,
+        snapshot_json={}, change_reason="initial",
+    )
+    db.add(revision)
+    await db.flush()
+    plot_unit = PlotUnit(
+        novel_id=novel.id, title="第一卷", scope_type="volume",
+        start_position=1, end_position=5, author_goal="目标",
+        start_state="开始", end_state="结束", foundation_revision_id=revision.id, status="draft",
+    )
+    db.add(plot_unit)
+    await db.flush()
+    plan_revision = PlotPlanRevision(
+        novel_id=novel.id, plot_unit_id=plot_unit.id,
+        foundation_revision_id=revision.id, version=1,
+        plan_json={"core_conflict": "冲突"},
+        change_reason="initial", status="active",
+    )
+    db.add(plan_revision)
+    await db.commit()
+
+    service = ContextPackageService(db, user_id=user.id, novel_id=novel.id, retrieval=FailingRetrievalService())
+    package = await service.build_for_brief(
+        brief_id=brief.id,
+        plot_plan_revision_id=plan_revision.id,
+        author_input="军饷",
+    )
+
+    # Fallback: empty lists, valid diagnostics
+    assert package["retrieved_context"] == []
+    assert package["risk_guard"] == []
+    assert package["snapshot"]["source_items"] == []
+    assert package["snapshot"]["diagnostics"]["retrieval_status"] == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_context_package_preserves_brief_and_plan_when_enriched(db, monkeypatch):
+    """Retrieval enrichment must NOT remove the active brief or plan."""
+    user, novel, blueprint, plan, brief = await _setup_writing_data(db)
+
+    from app.models.plot_planning import AuthorFoundation, AuthorFoundationRevision, PlotUnit, PlotPlanRevision
+    foundation = AuthorFoundation(
+        novel_id=novel.id, outline="大纲", current_intent="意图",
+        stage_goal="目标", constraints_json={}, version=1,
+    )
+    db.add(foundation)
+    await db.flush()
+    revision = AuthorFoundationRevision(
+        novel_id=novel.id, foundation_id=foundation.id, version=1,
+        snapshot_json={}, change_reason="initial",
+    )
+    db.add(revision)
+    await db.flush()
+    plot_unit = PlotUnit(
+        novel_id=novel.id, title="第一卷", scope_type="volume",
+        start_position=1, end_position=5, author_goal="目标",
+        start_state="开始", end_state="结束", foundation_revision_id=revision.id, status="draft",
+    )
+    db.add(plot_unit)
+    await db.flush()
+    plan_revision = PlotPlanRevision(
+        novel_id=novel.id, plot_unit_id=plot_unit.id,
+        foundation_revision_id=revision.id, version=1,
+        plan_json={"core_conflict": "冲突"},
+        change_reason="initial", status="active",
+    )
+    db.add(plan_revision)
+    await db.commit()
+
+    service = ContextPackageService(db, user_id=user.id, novel_id=novel.id, retrieval=FakeRetrievalService())
+    package = await service.build_for_brief(
+        brief_id=brief.id,
+        plot_plan_revision_id=plan_revision.id,
+        author_input="军饷",
+    )
+
+    # Brief and plan must still be present
+    assert "chapter_brief" in package
+    assert "plot_plan" in package
+    assert package["chapter_brief"] is not None
+    assert package["plot_plan"] is not None
+
+
+@pytest.mark.asyncio
+async def test_every_writing_run_copies_context_snapshot_even_without_plot_plan(db):
+    """Legacy (Phase 1/2) writing runs must also get a context_snapshot_json
+    with source_items, not just runs with plot_plan_revision_id."""
+    user, novel, blueprint, plan, brief = await _setup_writing_data(db)
+
+    # Use a FakeRetrievalService that returns a character source
+    class LegacyFakeRetrievalService:
+        async def retrieve(self, request):
+            return RetrievalContext(
+                writer_items=[
+                    {
+                        "source_id": "character:7",
+                        "source_type": "character_profile",
+                        "title": "沈砚",
+                        "locator": {"character_id": 7},
+                        "preview": "当前状态",
+                        "inclusion_reason": "角色连续性",
+                    },
+                ],
+                guard_constraints=[],
+                source_items=[
+                    {
+                        "source_id": "character:7",
+                        "source_type": "character_profile",
+                        "title": "沈砚",
+                        "locator": {"character_id": 7},
+                        "preview": "当前状态",
+                        "inclusion_reason": "角色连续性",
+                    },
+                ],
+                diagnostics={"retrieval_status": "ok"},
+            )
+
+    run = await WritingService(
+        db, user.id, novel.id,
+        generator=FakeWritingGenerator(),
+        gate_agent=FakeQualityGateAgent(),
+        retrieval=LegacyFakeRetrievalService(),
+    ).create_writing_run(brief_id=brief.id)
+
+    # Snapshot must exist and contain source_items
+    assert run.context_snapshot_json is not None
+    assert "source_items" in run.context_snapshot_json
+    assert run.context_snapshot_json["source_items"][0]["source_id"] == "character:7"
+
+
+@pytest.mark.asyncio
+async def test_writing_run_snapshot_is_frozen_and_not_mutated_by_gate(db):
+    """After creation, context_snapshot_json must not be mutated by
+    draft generation, quality-gate retries, or other post-creation steps."""
+    user, novel, blueprint, plan, brief = await _setup_writing_data(db)
+
+    class SnapshotTrackingRetrieval:
+        async def retrieve(self, request):
+            return RetrievalContext(
+                writer_items=[],
+                guard_constraints=[],
+                source_items=[],
+                diagnostics={"retrieval_status": "ok", "frozen_check": "original"},
+            )
+
+    svc = WritingService(
+        db, user.id, novel.id,
+        generator=FakeWritingGenerator(),
+        gate_agent=FakeQualityGateAgent(),
+        retrieval=SnapshotTrackingRetrieval(),
+    )
+    run = await svc.create_writing_run(brief_id=brief.id)
+
+    # The snapshot must retain the original diagnostics — not overwritten
+    assert run.context_snapshot_json["diagnostics"]["frozen_check"] == "original"
+
+
+@pytest.mark.asyncio
+async def test_writing_run_snapshot_fallback_when_retrieval_disabled(db, monkeypatch):
+    """When RETRIEVAL_ENABLED=false or retrieval is None, the snapshot
+    should still have a valid structure with empty source_items."""
+    user, novel, blueprint, plan, brief = await _setup_writing_data(db)
+
+    # Create service with no retrieval (retrieval=None)
+    svc = WritingService(
+        db, user.id, novel.id,
+        generator=FakeWritingGenerator(),
+        gate_agent=FakeQualityGateAgent(),
+        retrieval=None,
+    )
+    run = await svc.create_writing_run(brief_id=brief.id)
+
+    # Snapshot must exist with empty source_items and fallback diagnostics
+    assert run.context_snapshot_json is not None
+    assert "source_items" in run.context_snapshot_json
+    assert run.context_snapshot_json["source_items"] == []
+    assert run.context_snapshot_json["diagnostics"]["retrieval_status"] == "not_requested"

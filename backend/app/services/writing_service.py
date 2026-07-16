@@ -1,10 +1,11 @@
 """写作业务逻辑。可通过 generator 参数注入 fake generator 用于测试。"""
 
-import json
+import copy
 import datetime
+import json
 import logging
 import re
-from typing import Optional
+from typing import Any, Optional, Protocol, runtime_checkable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +32,18 @@ from app.repositories.writing_repo import (
 logger = logging.getLogger("novel_agent.writing")
 
 
+# ---------------------------------------------------------------------------
+# Retrieval protocol (avoids hard dependency on retrieval subsystem)
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class RetrievalProvider(Protocol):
+    """Minimal protocol that RetrievalService satisfies."""
+
+    async def retrieve(self, request: Any) -> Any: ...
+
+
 DEFAULT_LENGTH_CONTRACT = {
     "target_words": 3000,
     "min_words": 2000,
@@ -51,6 +64,7 @@ class WritingService:
         generator: Optional[BaseWritingGenerator] = None,
         gate_agent: Optional[BaseQualityGateAgent] = None,
         extraction_service: Optional[BaseExtractionService] = None,
+        retrieval: Optional[RetrievalProvider] = None,
     ):
         self.db = db
         self.user_id = user_id
@@ -58,6 +72,7 @@ class WritingService:
         self.generator = generator or DeepSeekWritingGenerator()
         self.gate_agent = gate_agent or DeepSeekQualityGateAgent()
         self.extraction_service = extraction_service or DeepSeekExtractionService()
+        self.retrieval = retrieval
         self.novel_repo = NovelRepo(db)
         self.blueprint_repo = BlueprintRepo(db)
         self.plan_repo = ChapterPlanRepo(db)
@@ -203,7 +218,7 @@ class WritingService:
             raise NotFound("章节任务书不存在")
         if plot_plan_revision_id is not None:
             from app.services.context_package_service import ContextPackageService
-            ctx_svc = ContextPackageService(self.db, self.user_id, self.novel_id)
+            ctx_svc = ContextPackageService(self.db, self.user_id, self.novel_id, retrieval=self.retrieval)
             orchestrated = await ctx_svc.build_for_brief(brief_id, plot_plan_revision_id, author_input)
         else:
             orchestrated = await self._build_context_package(novel, brief)
@@ -242,6 +257,80 @@ class WritingService:
                 {"title": ws.title, "category": ws.category, "content": ws.content}
                 for ws in novel.world_settings
             ]
+
+        # Enrich with retrieval if available
+        package = await self._enrich_legacy_package_with_retrieval(
+            package,
+            author_input="",
+            brief_json=brief.brief_json,
+            recent_summary=previous_chapter.summary if previous_chapter else None,
+        )
+
+        return package
+
+    async def _enrich_legacy_package_with_retrieval(
+        self,
+        package: dict,
+        *,
+        author_input: str,
+        brief_json: dict,
+        recent_summary: str | None,
+    ) -> dict:
+        """Enrich the legacy context package with retrieval results.
+
+        If self.retrieval is None or retrieval fails, falls back to
+        empty lists with appropriate diagnostics.
+        """
+        if self.retrieval is None:
+            package["retrieved_context"] = []
+            package["risk_guard"] = []
+            package["snapshot"] = {
+                **package.get("snapshot", {}),
+                "source_items": [],
+                "diagnostics": {"retrieval_status": "not_requested"},
+            }
+            return package
+
+        from app.retrieval.contracts import RetrievalRequest
+
+        # Build query from available context
+        parts: list[str] = []
+        if author_input:
+            parts.append(author_input)
+        if brief_json:
+            for key in ("plot_task", "acceptance_criteria", "scene_goal"):
+                val = brief_json.get(key)
+                if val and isinstance(val, str):
+                    parts.append(val)
+        if recent_summary:
+            parts.append(recent_summary)
+        query = "；".join(parts) if parts else "当前章节写作上下文"
+
+        try:
+            request = RetrievalRequest(
+                user_id=self.user_id,
+                novel_id=self.novel_id,
+                query=query,
+            )
+            retrieval = await self.retrieval.retrieve(request)
+
+            package["retrieved_context"] = retrieval.writer_items
+            package["risk_guard"] = retrieval.guard_constraints
+            package["snapshot"] = {
+                **package.get("snapshot", {}),
+                "source_items": retrieval.source_items,
+                "diagnostics": retrieval.diagnostics,
+            }
+        except Exception:
+            logger.exception("Retrieval enrichment failed for legacy package, falling back")
+            package["retrieved_context"] = []
+            package["risk_guard"] = []
+            package["snapshot"] = {
+                **package.get("snapshot", {}),
+                "source_items": [],
+                "diagnostics": {"retrieval_status": "fallback", "reason": "retrieval_error"},
+            }
+
         return package
 
     # ---- Writing Run ----
@@ -261,7 +350,7 @@ class WritingService:
         # --- Build context package ---
         if plot_plan_revision_id is not None:
             from app.services.context_package_service import ContextPackageService
-            ctx_svc = ContextPackageService(self.db, self.user_id, self.novel_id)
+            ctx_svc = ContextPackageService(self.db, self.user_id, self.novel_id, retrieval=self.retrieval)
             package = await ctx_svc.build_for_brief(brief_id, plot_plan_revision_id, author_input)
             context_package = await self.context_repo.create(self.novel_id, {
                 "chapter_brief_id": brief_id,
@@ -281,9 +370,14 @@ class WritingService:
             "context_package_id": context_package.id,
             "status": "running",
         })
-        if plot_plan_revision_id is not None:
-            run.context_snapshot_json = package.get("snapshot", {})
-            await self.db.flush()
+
+        # Freeze snapshot unconditionally for ALL run creation paths.
+        # Never mutate run.context_snapshot_json after this point.
+        run.context_snapshot_json = copy.deepcopy(package.get("snapshot", {
+            "source_items": [],
+            "diagnostics": {"retrieval_status": "not_requested"},
+        }))
+        await self.db.flush()
 
         try:
             if plot_plan_revision_id is not None:

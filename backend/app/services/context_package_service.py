@@ -1,7 +1,10 @@
 """上下文快照构建器。为 AI 写作提供完整的小说状态快照。"""
 
+import copy
 import datetime
+import json
 import logging
+from typing import Any, Optional, Protocol, runtime_checkable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,11 +20,69 @@ from app.repositories.plot_planning_repo import PlotPlanningRepo
 logger = logging.getLogger("novel_agent.context_package")
 
 
+# ---------------------------------------------------------------------------
+# Retrieval protocol (avoids hard dependency on retrieval subsystem)
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class RetrievalProvider(Protocol):
+    """Minimal protocol that RetrievalService satisfies.
+
+    Accepts a RetrievalRequest and returns a RetrievalContext.
+    """
+
+    async def retrieve(self, request: Any) -> Any: ...
+
+
+def _build_retrieval_query(
+    *,
+    author_input: str,
+    brief_json: dict,
+    plan_json: dict,
+    plot_unit_title: str | None,
+    recent_summary: str | None,
+) -> str:
+    """Build a deterministic query string from package components.
+
+    Concatenates the most informative fields so the retrieval service
+    can find relevant canon, characters, and guard constraints.
+    """
+    parts: list[str] = []
+    if author_input:
+        parts.append(author_input)
+    # Extract key fields from brief
+    if brief_json:
+        for key in ("plot_task", "acceptance_criteria", "scene_goal"):
+            val = brief_json.get(key)
+            if val and isinstance(val, str):
+                parts.append(val)
+    # Extract key fields from plan
+    if plan_json:
+        for key in ("core_conflict", "narrative_direction"):
+            val = plan_json.get(key)
+            if val and isinstance(val, str):
+                parts.append(val)
+    if plot_unit_title:
+        parts.append(plot_unit_title)
+    if recent_summary:
+        parts.append(recent_summary)
+    # Join with separator; fall back to a generic query
+    return "；".join(parts) if parts else "当前章节写作上下文"
+
+
 class ContextPackageService:
-    def __init__(self, db: AsyncSession, user_id: int, novel_id: int):
+    def __init__(
+        self,
+        db: AsyncSession,
+        user_id: int,
+        novel_id: int,
+        retrieval: Optional[RetrievalProvider] = None,
+    ):
         self.db = db
         self.user_id = user_id
         self.novel_id = novel_id
+        self.retrieval = retrieval
         self.repo = PlotPlanningRepo(db)
 
     async def _ensure_owned_novel(self) -> Novel:
@@ -136,7 +197,12 @@ class ContextPackageService:
                 "end_state": plot_unit.end_state,
             }
 
-        return {
+        # Compute recent summary for retrieval query
+        recent_summary = None
+        if locked_chapters:
+            recent_summary = locked_chapters[-1].summary or None
+
+        package = {
             "author_foundation": foundation_data,
             "published_canon": {
                 "chapters": [
@@ -168,3 +234,77 @@ class ContextPackageService:
                 "generated_at": datetime.datetime.now().isoformat(),
             },
         }
+
+        # Enrich with retrieval if available
+        package = await self._enrich_with_retrieval(
+            package,
+            author_input=author_input,
+            brief_json=brief.brief_json,
+            plan_json=plan_revision.plan_json,
+            plot_unit_title=plot_unit.title if plot_unit else None,
+            recent_summary=recent_summary,
+        )
+
+        return package
+
+    async def _enrich_with_retrieval(
+        self,
+        package: dict,
+        *,
+        author_input: str,
+        brief_json: dict,
+        plan_json: dict,
+        plot_unit_title: str | None,
+        recent_summary: str | None,
+    ) -> dict:
+        """Enrich the context package with retrieval results.
+
+        If self.retrieval is None or retrieval fails, falls back to
+        empty lists with appropriate diagnostics.
+        """
+        if self.retrieval is None:
+            package["retrieved_context"] = []
+            package["risk_guard"] = []
+            package["snapshot"] = {
+                **package.get("snapshot", {}),
+                "source_items": [],
+                "diagnostics": {"retrieval_status": "not_requested"},
+            }
+            return package
+
+        from app.retrieval.contracts import RetrievalRequest
+
+        query = _build_retrieval_query(
+            author_input=author_input,
+            brief_json=brief_json,
+            plan_json=plan_json,
+            plot_unit_title=plot_unit_title,
+            recent_summary=recent_summary,
+        )
+
+        try:
+            request = RetrievalRequest(
+                user_id=self.user_id,
+                novel_id=self.novel_id,
+                query=query,
+            )
+            retrieval = await self.retrieval.retrieve(request)
+
+            package["retrieved_context"] = retrieval.writer_items
+            package["risk_guard"] = retrieval.guard_constraints
+            package["snapshot"] = {
+                **package.get("snapshot", {}),
+                "source_items": retrieval.source_items,
+                "diagnostics": retrieval.diagnostics,
+            }
+        except Exception:
+            logger.exception("Retrieval enrichment failed, falling back to empty context")
+            package["retrieved_context"] = []
+            package["risk_guard"] = []
+            package["snapshot"] = {
+                **package.get("snapshot", {}),
+                "source_items": [],
+                "diagnostics": {"retrieval_status": "fallback", "reason": "retrieval_error"},
+            }
+
+        return package
