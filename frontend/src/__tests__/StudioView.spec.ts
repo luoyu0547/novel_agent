@@ -10,28 +10,28 @@ import StudioActionCard from '@/components/studio/StudioActionCard.vue'
 import StudioSourcesPanel from '@/components/studio/StudioSourcesPanel.vue'
 import StudioMessage from '@/components/studio/StudioMessage.vue'
 import type { ChapterOut, NovelOut } from '@/types/novel'
-import type { WritingSession, StudioDocument, WritingMessage, StudioConfirmationAction, StudioSource } from '@/types/writingStudio'
+import type { WritingSession, StudioDocument, WritingMessage, StudioSource } from '@/types/writingStudio'
 
 // ── Mocks (hoisted — must not reference top-level variables) ──────────
 
 vi.mock('@/api/novels', () => ({
-  listNovels: vi.fn(),
-  createNovel: vi.fn(),
-  getNovel: vi.fn(),
-  updateNovel: vi.fn(),
-  deleteNovel: vi.fn(),
-  createChapter: vi.fn(),
-  getChapter: vi.fn(),
-  updateChapter: vi.fn(),
-  deleteChapter: vi.fn(),
+  listNovels: vi.fn<() => unknown>(),
+  createNovel: vi.fn<() => unknown>(),
+  getNovel: vi.fn<() => unknown>(),
+  updateNovel: vi.fn<() => unknown>(),
+  deleteNovel: vi.fn<() => unknown>(),
+  createChapter: vi.fn<() => unknown>(),
+  getChapter: vi.fn<() => unknown>(),
+  updateChapter: vi.fn<() => unknown>(),
+  deleteChapter: vi.fn<() => unknown>(),
 }))
 
 vi.mock('@/api/writingStudio', () => ({
-  getStudioSession: vi.fn(),
-  sendStudioMessage: vi.fn(),
-  confirmStudioAction: vi.fn(),
-  saveStudioWorkingCopy: vi.fn(),
-  getRunSources: vi.fn(),
+  getStudioSession: vi.fn<() => unknown>(),
+  sendStudioMessage: vi.fn<() => unknown>(),
+  confirmStudioAction: vi.fn<() => unknown>(),
+  saveStudioWorkingCopy: vi.fn<() => unknown>(),
+  getRunSources: vi.fn<() => unknown>(),
 }))
 
 // ── Fixtures ──────────────────────────────────────────────────────────
@@ -275,9 +275,7 @@ describe('StudioView', () => {
     // Left pane should be visible initially
     expect(wrapper.find('[data-testid="studio-left-pane"]').exists()).toBe(true)
 
-    // Click toggle - emit click event on the stubbed el-button component
-    const toggleBtn = wrapper.findComponent({ ref: 'leftToggle' } as any)
-    // Alternative: directly call the component method
+    // Invoke the exposed handler because the Element Plus button is stubbed.
     wrapper.vm.toggleLeftPane()
     await wrapper.vm.$nextTick()
 

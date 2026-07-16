@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.ai.quality_gate import BaseQualityGateAgent, FakeQualityGateAgent, DeepSeekQualityGateAgent
-from app.ai.service import BaseExtractionService, DeepSeekExtractionService
-from app.ai.writer import BaseWritingGenerator, DeepSeekWritingGenerator
+from app.ai.service import BaseExtractionService, DeepSeekExtractionService, FakeExtractionService
+from app.ai.writer import BaseWritingGenerator, DeepSeekWritingGenerator, FakeWritingGenerator
+from app.core.config import settings
 from app.services.quality_gate_service import QualityGateService
 from app.core.exceptions import BadRequest, NotFound, AppException
 from app.models.novel import Novel, Chapter
@@ -59,9 +60,16 @@ class WritingService:
         self.db = db
         self.user_id = user_id
         self.novel_id = novel_id
-        self.generator = generator or DeepSeekWritingGenerator()
-        self.gate_agent = gate_agent or DeepSeekQualityGateAgent()
-        self.extraction_service = extraction_service or DeepSeekExtractionService()
+        use_fake_adapters = settings.APP_ENV == "test"
+        self.generator = generator or (
+            FakeWritingGenerator() if use_fake_adapters else DeepSeekWritingGenerator()
+        )
+        self.gate_agent = gate_agent or (
+            FakeQualityGateAgent() if use_fake_adapters else DeepSeekQualityGateAgent()
+        )
+        self.extraction_service = extraction_service or (
+            FakeExtractionService() if use_fake_adapters else DeepSeekExtractionService()
+        )
         self.retrieval = retrieval
         self.novel_repo = NovelRepo(db)
         self.blueprint_repo = BlueprintRepo(db)

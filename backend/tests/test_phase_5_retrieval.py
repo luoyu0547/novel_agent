@@ -3,6 +3,7 @@ import datetime
 import json
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -271,6 +272,23 @@ async def test_model_studio_embed_documents_returns_hybrid_embeddings():
 
 
 @pytest.mark.asyncio
+async def test_model_studio_accepts_sparse_token_entries_from_model_studio():
+    """The production API returns sparse entries as index/token/value objects."""
+    client = client_returning({"output": {"embeddings": [{
+        "embedding": [0.1] * 1024,
+        "sparse_embedding": [
+            {"index": 4, "token": "沈", "value": 0.3},
+            {"index": 9, "token": "砚", "value": 0.7},
+        ],
+    }]}})
+
+    result = await client.embed_query("沈砚")
+
+    assert result.sparse_indices == [4, 9]
+    assert result.sparse_values == [0.3, 0.7]
+
+
+@pytest.mark.asyncio
 async def test_model_studio_embed_query_returns_single_hybrid():
     client = client_returning({"output": {"embeddings": [{
         "embedding": [0.3] * 1024,
@@ -407,6 +425,7 @@ async def test_model_studio_rerank_sends_correct_payload():
     )
     await client.rerank("军饷", ["旧事", "账册"])
     body = json.loads(captured[0].content)
+    assert captured[0].url.path == "/compatible-api/v1/reranks"
     assert body["model"] == "qwen3-rerank"
     assert body["query"] == "军饷"
     assert body["documents"] == ["旧事", "账册"]
@@ -2471,11 +2490,21 @@ async def test_older_writing_run_snapshot_unchanged_after_newer_package(db):
 # ---------------------------------------------------------------------------
 
 
-def test_retrieval_configuration_has_no_default_secret():
+def test_retrieval_configuration_declares_no_default_secret():
     from app.core.config import Settings
-    s = Settings()
-    assert s.MODEL_STUDIO_API_KEY == ""
-    assert s.QDRANT_COLLECTION == "novel-context-v1"
+
+    fields = Settings.model_fields
+    assert fields["MODEL_STUDIO_API_KEY"].default == ""
+    assert fields["QDRANT_COLLECTION"].default == "novel-context-v1"
+
+
+def test_qdrant_client_and_compose_pin_the_same_minor_version():
+    project_root = Path(__file__).resolve().parents[2]
+    requirements = (project_root / "backend" / "requirements.txt").read_text()
+    compose = (project_root / "docker-compose.yml").read_text()
+
+    assert "qdrant-client>=1.18.0,<1.19.0" in requirements
+    assert "qdrant/qdrant:v1.18.0" in compose
 
 
 def test_compose_binds_qdrant_to_loopback():

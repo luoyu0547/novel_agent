@@ -19,6 +19,8 @@ const emit = defineEmits<{
 const composer = ref('')
 const messageList = ref<HTMLElement | null>(null)
 
+defineExpose({ composer })
+
 // Auto-scroll to bottom when new messages arrive
 watch(() => props.messages.length, async () => {
   await nextTick()

@@ -227,7 +227,7 @@ describe('useWritingStudioStore', () => {
         baseRevisionSequence: 0,
       }
 
-      await expect(store.saveWorkingCopy(1)).rejects.toThrow()
+      await expect(store.saveWorkingCopy(1)).rejects.toThrow('基础修订序列已过期')
       expect(store.saveState).toBe('conflict')
     })
 

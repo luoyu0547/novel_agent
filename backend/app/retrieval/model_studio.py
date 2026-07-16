@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -16,7 +17,7 @@ from app.retrieval.contracts import HybridEmbedding, RerankResult, RetrievalUnav
 logger = logging.getLogger(__name__)
 
 _EMBEDDING_PATH = "/services/embeddings/text-embedding/text-embedding"
-_RERANK_PATH = "/services/rerank/text-rerank/text-rerank"
+_RERANK_PATH = "/reranks"
 _BATCH_SIZE = 10
 _DENSE_DIMENSION = 1024
 
@@ -37,6 +38,7 @@ class ModelStudioClient:
 
     def __init__(self, settings: Any, http: httpx.AsyncClient | None = None) -> None:
         self._base_url = str(settings.MODEL_STUDIO_BASE_URL).rstrip("/")
+        self._rerank_base_url = self._compatible_api_base_url(self._base_url)
         self._api_key = settings.MODEL_STUDIO_API_KEY
         self._embedding_model = settings.MODEL_STUDIO_EMBEDDING_MODEL
         self._rerank_model = settings.MODEL_STUDIO_RERANK_MODEL
@@ -68,7 +70,7 @@ class ModelStudioClient:
             "top_n": len(documents),
             "instruct": "Retrieve novel canon passages relevant to the current writing task.",
         }
-        data = await self._post(_RERANK_PATH, payload)
+        data = await self._post(_RERANK_PATH, payload, base_url=self._rerank_base_url)
         try:
             results = data["results"]
             return [
@@ -105,11 +107,12 @@ class ModelStudioClient:
                         len(dense),
                     )
                     raise RetrievalUnavailable()
+                sparse_indices, sparse_values = self._parse_sparse_embedding(sparse)
                 result.append(
                     HybridEmbedding(
                         dense=dense,
-                        sparse_indices=sparse["indices"],
-                        sparse_values=sparse["values"],
+                        sparse_indices=sparse_indices,
+                        sparse_values=sparse_values,
                     )
                 )
             return result
@@ -119,13 +122,53 @@ class ModelStudioClient:
             logger.warning("Model Studio embedding returned unexpected payload: %s", type(exc).__name__)
             raise RetrievalUnavailable() from exc
 
-    async def _post(self, path: str, payload: dict[str, Any]) -> Any:
+    @staticmethod
+    def _parse_sparse_embedding(sparse: Any) -> tuple[list[int], list[float]]:
+        """Normalize supported Model Studio sparse embedding response shapes.
+
+        Older mock responses used parallel ``indices``/``values`` arrays, while
+        Model Studio returns a list of ``index``/``token``/``value`` entries.
+        The token text is informative only and is not required by Qdrant.
+        """
+        if isinstance(sparse, dict):
+            indices = sparse["indices"]
+            values = sparse["values"]
+        elif isinstance(sparse, list):
+            indices = [entry["index"] for entry in sparse]
+            values = [entry["value"] for entry in sparse]
+        else:
+            raise TypeError("sparse_embedding must be an object or list")
+
+        if (
+            not isinstance(indices, list)
+            or not isinstance(values, list)
+            or len(indices) != len(values)
+            or not all(isinstance(index, int) and not isinstance(index, bool) for index in indices)
+            or not all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in values)
+        ):
+            raise TypeError("invalid sparse embedding values")
+
+        return indices, [float(value) for value in values]
+
+    @staticmethod
+    def _compatible_api_base_url(base_url: str) -> str:
+        """Derive the Model Studio qwen3-rerank API base from a DashScope URL."""
+        parsed = urlsplit(base_url)
+        return urlunsplit((parsed.scheme, parsed.netloc, "/compatible-api/v1", "", ""))
+
+    async def _post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        base_url: str | None = None,
+    ) -> Any:
         """POST to Model Studio and return the parsed JSON body.
 
         Normalizes HTTP errors, timeouts, and malformed payloads into
         :class:`RetrievalUnavailable`.
         """
-        url = f"{self._base_url}{path}"
+        url = f"{base_url or self._base_url}{path}"
         headers = {"Authorization": f"Bearer {self._api_key}"}
         try:
             response = await self._http.post(url, json=payload, headers=headers)

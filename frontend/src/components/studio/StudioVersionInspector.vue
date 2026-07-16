@@ -6,7 +6,7 @@ import ReviewIssuePanel from '@/components/writing/ReviewIssuePanel.vue'
 import RevisionCandidatePanel from '@/components/writing/RevisionCandidatePanel.vue'
 import type { DraftVersion, DraftRevision, ReviewIssue } from '@/types/revision'
 
-const props = defineProps<{
+defineProps<{
   modelValue: boolean
   versions: DraftVersion[]
   currentVersion: DraftVersion | null

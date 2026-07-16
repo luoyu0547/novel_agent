@@ -1,12 +1,18 @@
 services:
   qdrant:
-    image: qdrant/qdrant:v1.15.3
+    image: qdrant/qdrant:v1.18.0
     ports:
       - '127.0.0.1:6333:6333'
     volumes:
       - qdrant_storage:/qdrant/storage
     healthcheck:
-      test: ['CMD-SHELL', 'wget -q -O - http://localhost:6333/healthz >/dev/null 2>&1']
+      test:
+        [
+          'CMD',
+          '/bin/bash',
+          '-c',
+          "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && IFS= read -r status <&3 && [[ \"$$status\" == *' 200 '* ]]",
+        ]
       interval: 10s
       timeout: 3s
       retries: 10

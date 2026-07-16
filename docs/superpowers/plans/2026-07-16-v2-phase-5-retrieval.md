@@ -114,7 +114,7 @@ Expected: FAIL during collection because `app.models.retrieval` and `RetrievalIn
 
 - [ ] **Step 3: Add configuration, Docker service, and package dependency**
 
-Add `qdrant-client>=1.13.0` to `backend/requirements.txt`. Keep `httpx`, already present, for Model Studio HTTP calls. Add exactly these non-secret environment variables to `.env.example` and `Settings` (with the shown safe values):
+Add `qdrant-client>=1.18.0,<1.19.0` to `backend/requirements.txt`, keeping its minor version aligned with the Docker image. Keep `httpx`, already present, for Model Studio HTTP calls. Add exactly these non-secret environment variables to `.env.example` and `Settings` (with the shown safe values):
 
 ```text
 RETRIEVAL_ENABLED=true
@@ -131,13 +131,13 @@ Create the root Compose file without an API service, because this repository has
 ```yaml
 services:
   qdrant:
-    image: qdrant/qdrant:v1.15.3
+    image: qdrant/qdrant:v1.18.0
     ports:
       - '127.0.0.1:6333:6333'
     volumes:
       - qdrant_storage:/qdrant/storage
     healthcheck:
-      test: ['CMD-SHELL', 'wget -q -O - http://localhost:6333/healthz >/dev/null 2>&1']
+      test: ['CMD', '/bin/bash', '-c', "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && IFS= read -r status <&3 && [[ \"$$status\" == *' 200 '* ]]"]
       interval: 10s
       timeout: 3s
       retries: 10
@@ -275,7 +275,7 @@ class Reranker(Protocol):
     async def rerank(self, query: str, documents: list[str]) -> list[RerankResult]: ...
 ```
 
-Use `httpx.AsyncClient.post` against `${MODEL_STUDIO_BASE_URL}/services/embeddings/text-embedding/text-embedding` with `Authorization: Bearer ...`, batches of at most ten texts, and the `parameters` asserted above. Use `${MODEL_STUDIO_BASE_URL}/services/rerank/text-rerank/text-rerank` for rerank with the `qwen3-rerank` root-level shape:
+Use `httpx.AsyncClient.post` against `${MODEL_STUDIO_BASE_URL}/services/embeddings/text-embedding/text-embedding` with `Authorization: Bearer ...`, batches of at most ten texts, and the `parameters` asserted above. For `qwen3-rerank`, derive the compatible API base from the configured Model Studio host and call `https://{host}/compatible-api/v1/reranks` with the root-level shape:
 
 ```python
 payload = {
@@ -287,7 +287,7 @@ payload = {
 }
 ```
 
-Validate exactly 1024 dense values and paired sparse `indices`/`values`; normalize HTTP/timeouts/invalid payloads into `RetrievalUnavailable("检索服务暂不可用")` while logging only status code and request ID.
+Validate exactly 1024 dense values and normalize Model Studio sparse token records into paired Qdrant indices/values; normalize HTTP/timeouts/invalid payloads into `RetrievalUnavailable("检索服务暂不可用")` while logging only status code and request ID.
 
 - [ ] **Step 4: Implement Qdrant collection and hybrid-query adapter**
 

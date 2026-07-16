@@ -8,7 +8,7 @@ export interface SelectPayload {
   sessionId?: number
 }
 
-const props = defineProps<{
+defineProps<{
   chapters: ChapterOut[]
   sessions: WritingSession[]
   selectedChapterId: number | null

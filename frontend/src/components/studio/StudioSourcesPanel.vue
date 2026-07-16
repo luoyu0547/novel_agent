@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { getRunSources } from '@/api/writingStudio'
 import type { StudioSource } from '@/types/writingStudio'
 
@@ -18,9 +18,6 @@ const loading = ref(false)
 const sources = ref<StudioSource[]>([])
 const loaded = ref(false)
 const error = ref<string | null>(null)
-
-// Cache key — only load once per run
-const cacheKey = computed(() => props.writingRunId)
 
 async function toggleSources() {
   if (expanded.value) {

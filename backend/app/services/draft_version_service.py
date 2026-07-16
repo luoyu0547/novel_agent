@@ -131,6 +131,42 @@ class DraftVersionService:
         run.word_count = version.word_count
         run.updated_at = datetime.datetime.now()
 
+    async def _upgrade_legacy_candidates(self, revision: DraftRevision) -> None:
+        """将未绑定版本的历史候选修订接入 DraftVersion 生命周期。
+
+        Phase 3 早期生成的规划候选没有 ``draft_version_id``，而统一的
+        修订 API 需要这组版本基线来做并发和补丁校验。升级同一写作运行中
+        所有尚未处理的旧候选，避免应用其中一个后其它候选仍处于不可用状态。
+        """
+        if revision.writing_run_id is None:
+            raise BadRequest("修订未关联写作运行")
+
+        run = await self._get_owned_run(revision.writing_run_id)
+        version = await self.ensure_initial_version(run)
+        result = await self.db.execute(
+            select(DraftRevision).where(
+                DraftRevision.writing_run_id == run.id,
+                DraftRevision.status == "candidate",
+                DraftRevision.draft_version_id.is_(None),
+            )
+        )
+        legacy_candidates = list(result.scalars().all())
+
+        for candidate in legacy_candidates:
+            candidate.draft_version_id = version.id
+            candidate.sequence = 0
+            if candidate.decision_id is not None:
+                candidate.source_type = "planning_decision"
+                candidate.source_id = candidate.decision_id
+            candidate.base_revision_sequence = version.revision_sequence
+            candidate.base_content_hash = self._hash_content(version.content)
+            candidate.base_content = version.content
+            candidate.patches_json = self._single_patch(
+                version.content, candidate.candidate_content, candidate.reason
+            )
+
+        await self.db.commit()
+
     # ── Public API ───────────────────────────────────────────────────
 
     async def ensure_initial_version(
@@ -415,6 +451,12 @@ class DraftVersionService:
             raise NotFound("修订不存在")
         if revision.status != "candidate":
             raise BadRequest("只能应用候选状态的修订")
+
+        if revision.draft_version_id is None:
+            await self._upgrade_legacy_candidates(revision)
+            revision = await self.repo.get_revision(revision_id, self.novel_id)
+            if not revision:
+                raise NotFound("修订不存在")
 
         # Load DraftVersion
         version = await self.repo.get(revision.draft_version_id, self.novel_id)

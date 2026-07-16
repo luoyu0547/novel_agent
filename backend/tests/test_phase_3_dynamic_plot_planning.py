@@ -825,6 +825,9 @@ async def test_choose_decision_keeps_candidate_unapplied_until_apply(db):
         decision.id, option_index=0,
     )
     assert revision.status == "candidate"
+    assert revision.draft_version_id is not None
+    assert revision.source_type == "planning_decision"
+    assert revision.patches_json
     assert resolved_run.draft_content == original_draft
 
     applied = await service.apply_draft_revision(revision.id)
@@ -1435,7 +1438,7 @@ async def test_phase3_e2e_full_scenario(client, novel_and_headers, db, monkeypat
         headers=headers,
     )
     assert apply_resp.status_code == 200
-    assert apply_resp.json()["data"]["status"] == "applied"
+    assert apply_resp.json()["data"]["revision"]["status"] == "applied"
     await db.refresh(conflicting_run)
     assert conflicting_run.planning_blocked is False
     assert conflicting_run.status == "completed"

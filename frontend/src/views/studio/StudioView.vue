@@ -176,7 +176,7 @@ async function handleConfirmAction(messageId: number, action: StudioConfirmation
   await studioStore.confirmAction(novelId.value, messageId, action, payload)
 }
 
-function handleOpenSources(writingRunId: number) {
+function handleOpenSources() {
   // Sources are rendered inline in StudioMessage via StudioSourcesPanel
   // This handler is available for future top-level source navigation
 }

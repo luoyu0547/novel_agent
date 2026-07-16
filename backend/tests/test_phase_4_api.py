@@ -267,6 +267,50 @@ async def _create_candidate_revision_db(novel_id: int, version_id: int, issue_id
         return candidate.id
 
 
+async def _setup_legacy_planning_candidate_db():
+    """Create a pre-Phase-4 planning candidate with no DraftVersion link."""
+    async with async_session_factory() as db:
+        user = User(username="legacy_planning_candidate", hashed_password="x")
+        db.add(user)
+        await db.flush()
+        novel = Novel(user_id=user.id, title="旧规划候选", genre="古风")
+        db.add(novel)
+        await db.flush()
+        chapter_plan = ChapterPlan(novel_id=novel.id, position=1)
+        db.add(chapter_plan)
+        await db.flush()
+        chapter_brief = ChapterBrief(novel_id=novel.id, chapter_plan_id=chapter_plan.id)
+        db.add(chapter_brief)
+        await db.flush()
+        context_package = ContextPackage(novel_id=novel.id, chapter_brief_id=chapter_brief.id)
+        db.add(context_package)
+        await db.flush()
+        run = WritingRun(
+            novel_id=novel.id,
+            chapter_brief_id=chapter_brief.id,
+            context_package_id=context_package.id,
+            draft_content="旧草稿正文",
+            status="completed",
+            planning_blocked=True,
+        )
+        db.add(run)
+        await db.flush()
+        candidate = DraftRevision(
+            novel_id=novel.id,
+            writing_run_id=run.id,
+            source_type="planning_decision",
+            base_content="旧草稿正文",
+            candidate_content="修订后的草稿正文",
+            scope_json={"type": "paragraph"},
+            diff_json={"old": "旧草稿正文", "new": "修订后的草稿正文"},
+            reason="旧规划决策",
+            status="candidate",
+        )
+        db.add(candidate)
+        await db.commit()
+        return {"user_id": user.id, "novel_id": novel.id, "run_id": run.id, "revision_id": candidate.id}
+
+
 # ── Fixtures ─────────────────────────────────────────────────────────
 
 
@@ -554,6 +598,24 @@ async def test_apply_draft_revision(client):
     assert body["code"] == 0
     assert body["data"]["revision"]["status"] == "applied"
     assert body["data"]["version"]["revision_sequence"] == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_legacy_planning_candidate_via_revision_api(client):
+    info = await _setup_legacy_planning_candidate_db()
+    headers = await _get_auth_headers(client, info["user_id"])
+
+    response = await client.put(
+        f"/api/v1/novels/{info['novel_id']}/draft-revisions/{info['revision_id']}/apply",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["revision"]["status"] == "applied"
+    async with async_session_factory() as db:
+        run = await db.get(WritingRun, info["run_id"])
+        assert run.draft_content == "修订后的草稿正文"
+        assert run.planning_blocked is False
 
 
 @pytest.mark.asyncio

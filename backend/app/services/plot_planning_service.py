@@ -327,7 +327,10 @@ class PlotPlanningService:
             raise BadRequest("关联的剧情计划已过期，请重新生成计划")
 
         draft_revisions = await self.repo.list_draft_revisions_by_run(decision.writing_run_id)
-        parent_revision = draft_revisions[0] if draft_revisions else None
+        parent_revision = next(
+            (revision for revision in draft_revisions if revision.status == "applied"),
+            None,
+        )
 
         context = {
             "conflict": {
@@ -349,12 +352,50 @@ class PlotPlanningService:
             selected_direction=selected_direction,
         )
 
+        from app.services.draft_version_service import DraftVersionService
+
+        version = None
+        if run:
+            version_service = DraftVersionService(self.db, self.user_id, self.novel_id)
+            version = await version_service.ensure_initial_version(run)
+
         new_plan = None
-        base_content = ""
-        if parent_revision:
+        base_content = version.content if version else ""
+        if not base_content and parent_revision:
             base_content = parent_revision.candidate_content
-        elif run:
+        elif not base_content and run:
             base_content = run.draft_content
+
+        reason = f"决策选择: {selected_direction}"
+        draft_revision_data = {
+            "writing_run_id": decision.writing_run_id,
+            "parent_revision_id": parent_revision.id if parent_revision else None,
+            "decision_id": decision_id,
+            "source_type": "planning_decision",
+            "source_id": decision_id,
+            "base_content": base_content,
+            "candidate_content": revision_result.candidate_content,
+            "scope_json": revision_result.scope,
+            "diff_json": revision_result.diff,
+            "reason": reason,
+            "expanded_scope": revision_result.expanded_scope,
+            "expanded_scope_reason": revision_result.expansion_reason,
+            "status": "candidate",
+        }
+        if version:
+            draft_revision_data.update(
+                {
+                    "draft_version_id": version.id,
+                    "sequence": 0,
+                    "base_revision_sequence": version.revision_sequence,
+                    "base_content_hash": DraftVersionService._hash_content(version.content),
+                    "patches_json": DraftVersionService._single_patch(
+                        version.content,
+                        revision_result.candidate_content,
+                        reason,
+                    ),
+                }
+            )
 
         try:
             async with self.db.begin_nested():
@@ -371,17 +412,9 @@ class PlotPlanningService:
                         "status": "active",
                     })
 
-                draft_revision = await self.repo.create_draft_revision(self.novel_id, {
-                    "writing_run_id": decision.writing_run_id,
-                    "parent_revision_id": parent_revision.id if parent_revision else None,
-                    "decision_id": decision_id,
-                    "base_content": base_content,
-                    "candidate_content": revision_result.candidate_content,
-                    "scope_json": revision_result.scope,
-                    "diff_json": revision_result.diff,
-                    "reason": f"决策选择: {selected_direction}",
-                    "status": "candidate",
-                })
+                draft_revision = await self.repo.create_draft_revision(
+                    self.novel_id, draft_revision_data
+                )
 
                 decision.selected_option_index = option_index
                 decision.custom_intent = custom_intent if option_index is None else None
@@ -399,8 +432,9 @@ class PlotPlanningService:
         return decision, new_plan, draft_revision, run
 
     async def apply_draft_revision(self, revision_id: int) -> DraftRevision:
-        """应用候选修订——委托给 DraftVersionService.apply_revision()。"""
+        """通过统一的草稿版本生命周期应用规划候选。"""
         from app.services.draft_version_service import DraftVersionService
+
         dv_svc = DraftVersionService(self.db, self.user_id, self.novel_id)
         _version, revision = await dv_svc.apply_revision(revision_id)
         return revision

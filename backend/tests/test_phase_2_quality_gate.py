@@ -247,6 +247,19 @@ async def test_quality_gate_service_no_agent(db):
 
 
 @pytest.mark.asyncio
+async def test_writing_service_uses_fake_ai_adapters_in_test_environment(db):
+    from app.ai.service import FakeExtractionService
+    from app.ai.writer import FakeWritingGenerator
+    from app.services.writing_service import WritingService
+
+    service = WritingService(db=db, user_id=1, novel_id=1)
+
+    assert isinstance(service.generator, FakeWritingGenerator)
+    assert isinstance(service.gate_agent, FakeQualityGateAgent)
+    assert isinstance(service.extraction_service, FakeExtractionService)
+
+
+@pytest.mark.asyncio
 async def test_quality_gate_in_writing_flow(client, novel_and_headers):
     """写作流程中质量门禁自动执行。"""
     novel, headers = novel_and_headers
