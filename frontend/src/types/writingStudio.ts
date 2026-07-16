@@ -55,12 +55,10 @@ export interface StudioMessageResult {
 }
 
 export interface StudioSource {
-  id: number
-  writing_run_id: number
+  source_id: string
+  source_type: string
   title: string
+  locator: Record<string, unknown>
   preview: string
   inclusion_reason: string
-  relevance_score: number
-  source_type: string
-  diagnostics: Record<string, unknown> | null
 }

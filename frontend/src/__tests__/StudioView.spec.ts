@@ -7,9 +7,10 @@ import StudioChapterExplorer from '@/components/studio/StudioChapterExplorer.vue
 import StudioDocumentPane from '@/components/studio/StudioDocumentPane.vue'
 import StudioConversationPane from '@/components/studio/StudioConversationPane.vue'
 import StudioActionCard from '@/components/studio/StudioActionCard.vue'
+import StudioSourcesPanel from '@/components/studio/StudioSourcesPanel.vue'
 import StudioMessage from '@/components/studio/StudioMessage.vue'
 import type { ChapterOut, NovelOut } from '@/types/novel'
-import type { WritingSession, StudioDocument, WritingMessage, StudioConfirmationAction } from '@/types/writingStudio'
+import type { WritingSession, StudioDocument, WritingMessage, StudioConfirmationAction, StudioSource } from '@/types/writingStudio'
 
 // ── Mocks (hoisted — must not reference top-level variables) ──────────
 
@@ -1029,5 +1030,51 @@ describe('StudioActionCard', () => {
 
     expect(wrapper.find('[data-testid="studio-confirm-accept"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="studio-confirm-discard"]').exists()).toBe(true)
+  })
+})
+
+// ── StudioSourcesPanel fixtures and tests ──────────────────────────────────
+
+const sourceFixture: StudioSource = {
+  source_id: 'chapter:18:scene:3',
+  source_type: 'chapter_scene',
+  title: '第 18 章 · 第 3 场',
+  locator: { chapter_id: 18, scene_index: 3 },
+  preview: '沈砚发现军饷账册异常。',
+  inclusion_reason: '与当前角色认知和军饷案直接相关',
+}
+
+describe('StudioSourcesPanel', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('renders source title, preview, and inclusion_reason', async () => {
+    const { getRunSources } = await import('@/api/writingStudio')
+    vi.mocked(getRunSources).mockResolvedValue([sourceFixture])
+
+    const wrapper = mount(StudioSourcesPanel, {
+      props: {
+        writingRunId: 100,
+        novelId: 1,
+        messageId: 21,
+      },
+      global: { stubs: globalStubs },
+    })
+
+    // Click to expand and trigger source loading
+    await wrapper.find('[data-testid="studio-sources-trigger-21"]').trigger('click')
+    await wrapper.vm.$nextTick()
+
+    // Wait for async loading to complete
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="studio-source-chapter:18:scene:3"]').exists()).toBe(true)
+    })
+
+    const item = wrapper.find('[data-testid="studio-source-chapter:18:scene:3"]')
+    expect(item.find('.studio-sources__item-title').text()).toBe('第 18 章 · 第 3 场')
+    expect(item.find('.studio-sources__item-preview').text()).toBe('沈砚发现军饷账册异常。')
+    expect(item.find('.studio-sources__item-reason').text()).toBe('与当前角色认知和军饷案直接相关')
   })
 })

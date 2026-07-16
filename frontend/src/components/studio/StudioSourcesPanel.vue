@@ -18,7 +18,6 @@ const loading = ref(false)
 const sources = ref<StudioSource[]>([])
 const loaded = ref(false)
 const error = ref<string | null>(null)
-const diagnosticsOpen = ref(false)
 
 // Cache key — only load once per run
 const cacheKey = computed(() => props.writingRunId)
@@ -76,20 +75,13 @@ async function toggleSources() {
       <div v-else-if="sources.length > 0" class="studio-sources__list">
         <div
           v-for="source in sources"
-          :key="source.id"
+          :key="source.source_id"
           class="studio-sources__item"
-          :data-testid="`studio-source-${source.id}`"
+          :data-testid="`studio-source-${source.source_id}`"
         >
           <div class="studio-sources__item-title">{{ source.title }}</div>
           <div class="studio-sources__item-preview">{{ source.preview }}</div>
           <div class="studio-sources__item-reason">{{ source.inclusion_reason }}</div>
-
-          <!-- Diagnostics behind a collapsible section -->
-          <el-collapse v-if="source.diagnostics" class="studio-sources__diagnostics">
-            <el-collapse-item title="检索诊断" :name="`diag-${source.id}`">
-              <pre class="studio-sources__diag-content">{{ JSON.stringify(source.diagnostics, null, 2) }}</pre>
-            </el-collapse-item>
-          </el-collapse>
         </div>
       </div>
 
@@ -164,26 +156,6 @@ async function toggleSources() {
       color: $color-text-placeholder;
       font-style: italic;
     }
-  }
-
-  &__diagnostics {
-    margin-top: $spacing-xs;
-    border: none;
-
-    :deep(.el-collapse-item__header) {
-      font-size: $font-size-xs;
-      color: $color-text-secondary;
-      height: 24px;
-      line-height: 24px;
-    }
-  }
-
-  &__diag-content {
-    font-size: $font-size-xs;
-    color: $color-text-secondary;
-    margin: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
   }
 
   &__empty {
