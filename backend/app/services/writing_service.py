@@ -5,7 +5,7 @@ import datetime
 import json
 import logging
 import re
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,20 +28,10 @@ from app.repositories.writing_repo import (
     ContextPackageRepo,
     WritingRunRepo,
 )
+from app.retrieval.contracts import RetrievalProvider, RetrievalUnavailable
+from app.services.context_package_service import _build_retrieval_query
 
 logger = logging.getLogger("novel_agent.writing")
-
-
-# ---------------------------------------------------------------------------
-# Retrieval protocol (avoids hard dependency on retrieval subsystem)
-# ---------------------------------------------------------------------------
-
-
-@runtime_checkable
-class RetrievalProvider(Protocol):
-    """Minimal protocol that RetrievalService satisfies."""
-
-    async def retrieve(self, request: Any) -> Any: ...
 
 
 DEFAULT_LENGTH_CONTRACT = {
@@ -221,7 +211,7 @@ class WritingService:
             ctx_svc = ContextPackageService(self.db, self.user_id, self.novel_id, retrieval=self.retrieval)
             orchestrated = await ctx_svc.build_for_brief(brief_id, plot_plan_revision_id, author_input)
         else:
-            orchestrated = await self._build_context_package(novel, brief)
+            orchestrated = await self._build_context_package(novel, brief, author_input=author_input)
         result = await self.context_repo.create(self.novel_id, {
             "chapter_brief_id": brief_id,
             "package_json": orchestrated,
@@ -229,7 +219,7 @@ class WritingService:
         await self.db.commit()
         return result
 
-    async def _build_context_package(self, novel: Novel, brief: ChapterBrief) -> dict:
+    async def _build_context_package(self, novel: Novel, brief: ChapterBrief, *, author_input: str = "") -> dict:
         chapters = novel.chapters or []
         previous_chapter = chapters[-1] if chapters else None
         package = {
@@ -261,7 +251,7 @@ class WritingService:
         # Enrich with retrieval if available
         package = await self._enrich_legacy_package_with_retrieval(
             package,
-            author_input="",
+            author_input=author_input,
             brief_json=brief.brief_json,
             recent_summary=previous_chapter.summary if previous_chapter else None,
         )
@@ -293,18 +283,13 @@ class WritingService:
 
         from app.retrieval.contracts import RetrievalRequest
 
-        # Build query from available context
-        parts: list[str] = []
-        if author_input:
-            parts.append(author_input)
-        if brief_json:
-            for key in ("plot_task", "acceptance_criteria", "scene_goal"):
-                val = brief_json.get(key)
-                if val and isinstance(val, str):
-                    parts.append(val)
-        if recent_summary:
-            parts.append(recent_summary)
-        query = "；".join(parts) if parts else "当前章节写作上下文"
+        query = _build_retrieval_query(
+            author_input=author_input,
+            brief_json=brief_json,
+            plan_json={},
+            plot_unit_title=None,
+            recent_summary=recent_summary,
+        )
 
         try:
             request = RetrievalRequest(
@@ -321,8 +306,8 @@ class WritingService:
                 "source_items": retrieval.source_items,
                 "diagnostics": retrieval.diagnostics,
             }
-        except Exception:
-            logger.exception("Retrieval enrichment failed for legacy package, falling back")
+        except RetrievalUnavailable as exc:
+            logger.warning("retrieval enrichment failed: %s", type(exc).__name__)
             package["retrieved_context"] = []
             package["risk_guard"] = []
             package["snapshot"] = {
@@ -362,7 +347,7 @@ class WritingService:
                 raise NotFound("上下文包不存在")
             package = context_package.package_json
         else:
-            package = await self._build_context_package(novel, brief)
+            package = await self._build_context_package(novel, brief, author_input=author_input)
             context_package = await self.context_repo.create(self.novel_id, {"chapter_brief_id": brief_id, "package_json": package})
 
         run = await self.run_repo.create(self.novel_id, {

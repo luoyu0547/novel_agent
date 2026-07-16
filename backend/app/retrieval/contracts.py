@@ -128,6 +128,16 @@ class RetrievalContext:
 
 
 @runtime_checkable
+class RetrievalProvider(Protocol):
+    """Minimal protocol that RetrievalService satisfies.
+
+    Accepts a RetrievalRequest and returns a RetrievalContext.
+    """
+
+    async def retrieve(self, request: Any) -> Any: ...
+
+
+@runtime_checkable
 class EmbeddingProvider(Protocol):
     """Protocol for embedding providers that produce hybrid vectors."""
 

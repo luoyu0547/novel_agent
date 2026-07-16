@@ -1,10 +1,8 @@
 """上下文快照构建器。为 AI 写作提供完整的小说状态快照。"""
 
-import copy
 import datetime
-import json
 import logging
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,23 +14,9 @@ from app.models.novel import Novel
 from app.models.plot_fact import PlotFact
 from app.models.writing import ChapterBrief, ChapterPlan
 from app.repositories.plot_planning_repo import PlotPlanningRepo
+from app.retrieval.contracts import RetrievalProvider, RetrievalUnavailable
 
 logger = logging.getLogger("novel_agent.context_package")
-
-
-# ---------------------------------------------------------------------------
-# Retrieval protocol (avoids hard dependency on retrieval subsystem)
-# ---------------------------------------------------------------------------
-
-
-@runtime_checkable
-class RetrievalProvider(Protocol):
-    """Minimal protocol that RetrievalService satisfies.
-
-    Accepts a RetrievalRequest and returns a RetrievalContext.
-    """
-
-    async def retrieve(self, request: Any) -> Any: ...
 
 
 def _build_retrieval_query(
@@ -297,8 +281,8 @@ class ContextPackageService:
                 "source_items": retrieval.source_items,
                 "diagnostics": retrieval.diagnostics,
             }
-        except Exception:
-            logger.exception("Retrieval enrichment failed, falling back to empty context")
+        except RetrievalUnavailable as exc:
+            logger.warning("retrieval enrichment failed: %s", type(exc).__name__)
             package["retrieved_context"] = []
             package["risk_guard"] = []
             package["snapshot"] = {

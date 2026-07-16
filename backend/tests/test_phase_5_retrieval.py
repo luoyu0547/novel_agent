@@ -2118,10 +2118,10 @@ class FakeRetrievalService:
 
 
 class FailingRetrievalService:
-    """RetrievalService that raises an exception, simulating unavailable retrieval."""
+    """RetrievalService that raises RetrievalUnavailable, simulating unavailable retrieval."""
 
     async def retrieve(self, request):
-        raise RuntimeError("retrieval infrastructure down")
+        raise RetrievalUnavailable("retrieval infrastructure down")
 
 
 # -- Task 6: Context package enrichment tests --------------------------------
@@ -2401,3 +2401,66 @@ async def test_writing_run_snapshot_fallback_when_retrieval_disabled(db, monkeyp
     assert "source_items" in run.context_snapshot_json
     assert run.context_snapshot_json["source_items"] == []
     assert run.context_snapshot_json["diagnostics"]["retrieval_status"] == "not_requested"
+
+
+@pytest.mark.asyncio
+async def test_older_writing_run_snapshot_unchanged_after_newer_package(db):
+    """Verify historical source snapshots are immutable after newer package creation."""
+    user, novel, blueprint, plan, brief = await _setup_writing_data(db)
+
+    # Set up plot planning data required by build_for_brief
+    from app.models.plot_planning import AuthorFoundation, AuthorFoundationRevision, PlotUnit, PlotPlanRevision
+    foundation = AuthorFoundation(
+        novel_id=novel.id, outline="大纲", current_intent="意图",
+        stage_goal="目标", constraints_json={}, version=1,
+    )
+    db.add(foundation)
+    await db.flush()
+    revision = AuthorFoundationRevision(
+        novel_id=novel.id, foundation_id=foundation.id, version=1,
+        snapshot_json={}, change_reason="initial",
+    )
+    db.add(revision)
+    await db.flush()
+    plot_unit = PlotUnit(
+        novel_id=novel.id, title="第一卷：边城旧案", scope_type="volume",
+        start_position=1, end_position=5, author_goal="查清密令来源",
+        start_state="抵达", end_state="确认", foundation_revision_id=revision.id, status="draft",
+    )
+    db.add(plot_unit)
+    await db.flush()
+    plan_revision = PlotPlanRevision(
+        novel_id=novel.id, plot_unit_id=plot_unit.id,
+        foundation_revision_id=revision.id, version=1,
+        plan_json={"core_conflict": "调查触动守城势力"},
+        change_reason="initial generation", status="active",
+    )
+    db.add(plan_revision)
+    await db.commit()
+
+    # Create first writing run with retrieval
+    first_retrieval = FakeRetrievalService()
+    first_run = await WritingService(
+        db, user.id, novel.id,
+        generator=FakeWritingGenerator(),
+        gate_agent=FakeQualityGateAgent(),
+        retrieval=first_retrieval,
+    ).create_writing_run(brief_id=brief.id, plot_plan_revision_id=plan_revision.id)
+
+    # Record the original snapshot
+    original_source_items = copy.deepcopy(first_run.context_snapshot_json["source_items"])
+    assert len(original_source_items) > 0, "First run should have source_items"
+
+    # Create a second context package (simulating a newer build)
+    second_retrieval = FakeRetrievalService()
+    second_pkg = await ContextPackageService(
+        db, user_id=user.id, novel_id=novel.id, retrieval=second_retrieval,
+    ).build_for_brief(
+        brief_id=brief.id,
+        plot_plan_revision_id=plan_revision.id,
+        author_input="新的输入",
+    )
+
+    # Refresh the first run from DB and verify its snapshot is unchanged
+    await db.refresh(first_run)
+    assert first_run.context_snapshot_json["source_items"] == original_source_items
