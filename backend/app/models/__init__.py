@@ -14,6 +14,7 @@ from app.models.plot_planning import (
 )
 from app.models.quality_gate import ReviewIssue
 from app.models.user import User
+from app.models.retrieval import RetrievalIndexJob
 from app.models.writing import NovelBlueprint, ChapterPlan, ChapterBrief, ContextPackage, WritingRun, RepairLog, PendingRepair
 from app.models.writing_session import DraftWorkingCopy, WritingMessage, WritingSession
 
@@ -28,4 +29,5 @@ __all__ = [
     "PlotPlanRevision", "PlanningDecision", "DraftRevision",
     "DraftVersion",
     "WritingSession", "WritingMessage", "DraftWorkingCopy",
+    "RetrievalIndexJob",
 ]
