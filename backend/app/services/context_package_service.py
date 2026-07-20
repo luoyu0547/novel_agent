@@ -112,7 +112,10 @@ class ContextPackageService:
         foundation = await self.repo.get_foundation(self.novel_id)
         latest_revision = await self.repo.get_latest_foundation_revision(self.novel_id)
 
-        locked_chapters = [c for c in novel.chapters if c.status == "locked"]
+        locked_chapters = sorted(
+            (c for c in novel.chapters if c.status == "locked"),
+            key=lambda chapter: chapter.id,
+        )
 
         characters = []
         if novel.characters:
@@ -151,9 +154,7 @@ class ContextPackageService:
                 "id": f.id,
                 "name": f.name,
                 "description": f.description,
-                "hidden_truth": f.hidden_truth,
                 "status": f.status,
-                "risk_warning": f.risk_warning,
             }
             for f in foreshadowings_result.scalars().all()
         ]
@@ -188,16 +189,17 @@ class ContextPackageService:
 
         package = {
             "author_foundation": foundation_data,
+            # Relevant old scenes come from retrieval. Keep only compact recent
+            # summaries here so the package remains bounded for long novels.
             "published_canon": {
                 "chapters": [
                     {
                         "id": c.id,
                         "title": c.title,
-                        "content": c.content,
                         "summary": c.summary,
                         "status": c.status,
                     }
-                    for c in locked_chapters
+                    for c in locked_chapters[-3:]
                 ],
             },
             "plot_unit": plot_unit_data,

@@ -571,6 +571,8 @@ const sourceTypeLabel: Record<string, string> = {
         <div v-if="store.latestContext">
           <p><strong>角色数：</strong>{{ getContextListLength('characters') }}</p>
           <p><strong>设定数：</strong>{{ getContextListLength('world_settings') }}</p>
+          <p><strong>剧情事实数：</strong>{{ getContextListLength('plot_facts') }}</p>
+          <p><strong>伏笔数：</strong>{{ getContextListLength('foreshadowings') }}</p>
           <p><strong>蓝图摘要：</strong>已包含</p>
         </div>
         <el-button

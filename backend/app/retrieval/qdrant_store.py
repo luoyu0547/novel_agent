@@ -181,6 +181,7 @@ class QdrantVectorStore:
                     source_type=payload.get("source_type", ""),
                     title=payload.get("title", ""),
                     preview=payload.get("preview", ""),
+                    text=payload.get("text", ""),
                     locator=payload.get("locator", {}),
                     visibility=payload.get("visibility", "default"),
                     chapter_id=payload.get("chapter_id"),

@@ -20,12 +20,18 @@ from app.schemas.plot_planning import (
     PlanningDecisionOut,
 )
 from app.services.plot_planning_service import PlotPlanningService
+from app.retrieval.runtime import get_retrieval_provider
 
 router = APIRouter(prefix="/novels/{novel_id}", tags=["Planning"])
 
 
 def _get_service(db: AsyncSession, current_user: User, novel_id: int) -> PlotPlanningService:
-    return PlotPlanningService(db=db, user_id=current_user.id, novel_id=novel_id)
+    return PlotPlanningService(
+        db=db,
+        user_id=current_user.id,
+        novel_id=novel_id,
+        retrieval=get_retrieval_provider(),
+    )
 
 
 @router.get("/author-foundation")

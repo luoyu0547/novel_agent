@@ -63,6 +63,7 @@ class RetrievedSource:
     title: str
     preview: str
     locator: dict[str, Any]
+    text: str = ""
     visibility: str = "default"
     chapter_id: int | None = None
     importance: str = "minor"

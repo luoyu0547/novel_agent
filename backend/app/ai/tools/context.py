@@ -10,6 +10,25 @@ from app.models.plot_fact import PlotFact
 from app.core.database import async_session_factory
 
 
+_MAX_SECTION_CHARS = 5000
+_MAX_FIELD_CHARS = 500
+
+
+def _clip(value: object, limit: int = _MAX_FIELD_CHARS) -> str:
+    text = str(value or "")
+    return text if len(text) <= limit else f"{text[:limit]}…"
+
+
+def _bounded_section(header: str, lines: list[str]) -> str:
+    section = "\n".join([header, *lines])
+    if len(section) <= _MAX_SECTION_CHARS:
+        return section
+    return (
+        f"{section[:_MAX_SECTION_CHARS]}\n"
+        "[该类记忆较多，其余内容已省略；相关资料由检索结果补充]"
+    )
+
+
 @tool
 async def get_chapter_context(
     novel_id: int,
@@ -32,37 +51,66 @@ async def get_chapter_context(
             select(CharacterProfile).where(CharacterProfile.novel_id == novel_id)
         )).scalars().all()
         if chars:
-            parts = ["\n[已有角色]"]
-            for c in chars:
-                parts.append(f"{c.name}: 身份={c.identity}, 性格={c.personality}, 当前状态={c.current_state}")
-            context_parts.append("\n".join(parts))
+            lines = [
+                f"{_clip(c.name, 120)}: 身份={_clip(c.identity)}, "
+                f"性格={_clip(c.personality)}, 当前状态={_clip(c.current_state)}"
+                for c in chars
+            ]
+            context_parts.append(_bounded_section("\n[已有角色]", lines))
 
         settings = (await db.execute(
             select(WorldSetting).where(WorldSetting.novel_id == novel_id)
         )).scalars().all()
         if settings:
-            parts = ["\n[已有设定]"]
-            for s in settings:
-                parts.append(f"{s.title} ({s.category}): {s.content}")
-            context_parts.append("\n".join(parts))
+            lines = [
+                f"{_clip(s.title, 160)} ({_clip(s.category, 80)}): {_clip(s.content)}"
+                for s in settings
+            ]
+            context_parts.append(_bounded_section("\n[已有设定]", lines))
 
         foreshadows = (await db.execute(
             select(Foreshadowing).where(Foreshadowing.novel_id == novel_id)
         )).scalars().all()
         if foreshadows:
-            parts = ["\n[已有伏笔]"]
-            for f in foreshadows:
-                parts.append(f"{f.name}: {f.description} (状态={f.status})")
-            context_parts.append("\n".join(parts))
+            lines = [
+                f"{_clip(f.name, 160)}: {_clip(f.description)} (状态={_clip(f.status, 80)})"
+                for f in foreshadows
+            ]
+            context_parts.append(_bounded_section("\n[已有伏笔]", lines))
 
         facts = (await db.execute(
             select(PlotFact).where(PlotFact.novel_id == novel_id)
         )).scalars().all()
         if facts:
-            parts = ["\n[已有剧情事实]"]
-            for f in facts:
-                related = json.dumps(f.related_characters, ensure_ascii=False)
-                parts.append(f"{f.content} (涉及: {related}, 重要性: {f.importance})")
-            context_parts.append("\n".join(parts))
+            lines = [
+                f"{_clip(f.content)} (涉及: {_clip(json.dumps(f.related_characters, ensure_ascii=False))}, "
+                f"重要性: {_clip(f.importance, 80)})"
+                for f in facts
+            ]
+            context_parts.append(_bounded_section("\n[已有剧情事实]", lines))
+
+        state = getattr(runtime, "state", {}) or {}
+        user_id = state.get("user_id", 0) if isinstance(state, dict) else 0
+        if user_id:
+            from app.retrieval.contracts import RetrievalRequest
+            from app.retrieval.runtime import get_retrieval_provider
+
+            provider = get_retrieval_provider()
+            if provider:
+                retrieval = await provider.retrieve(
+                    RetrievalRequest(
+                        user_id=user_id,
+                        novel_id=novel_id,
+                        query=f"{chapter.title}\n{chapter.content[:6000]}",
+                        target_chapter_id=chapter_id,
+                    )
+                )
+                if retrieval.writer_items:
+                    lines = [
+                        f"{_clip(item.get('title'), 160)}: "
+                        f"{_clip(item.get('text') or item.get('preview'))}"
+                        for item in retrieval.writer_items
+                    ]
+                    context_parts.append(_bounded_section("\n[检索到的相关资料]", lines))
 
     return "\n".join(context_parts)

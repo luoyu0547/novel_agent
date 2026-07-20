@@ -28,12 +28,27 @@ from app.schemas.writing import (
 from app.schemas.revision import AcceptWritingRunRequest
 from app.services.writing_service import WritingService
 from app.services.repair_service import RepairService
+from app.retrieval.runtime import get_retrieval_provider
 
 router = APIRouter(prefix="/novels/{novel_id}", tags=["Writing"])
 
 
+def _public_context_package_json(package_json: dict) -> dict:
+    """Return only author-facing structured anchors for the legacy endpoint."""
+    return {
+        key: value
+        for key, value in package_json.items()
+        if key not in {"retrieved_context", "risk_guard", "snapshot"}
+    }
+
+
 def _get_service(db: AsyncSession, current_user: User, novel_id: int) -> WritingService:
-    return WritingService(db=db, user_id=current_user.id, novel_id=novel_id)
+    return WritingService(
+        db=db,
+        user_id=current_user.id,
+        novel_id=novel_id,
+        retrieval=get_retrieval_provider(),
+    )
 
 
 # ---- Blueprints ----
@@ -165,7 +180,9 @@ async def generate_context_package(
         body.plot_plan_revision_id,
         body.author_input or "",
     )
-    return ApiResponse.success(data=ContextPackageOut.model_validate(package).model_dump())
+    payload = ContextPackageOut.model_validate(package).model_dump()
+    payload["package_json"] = _public_context_package_json(payload["package_json"])
+    return ApiResponse.success(data=payload)
 
 
 # ---- Writing Runs ----

@@ -23,6 +23,7 @@ from app.models.plot_planning import (
     PlotUnit,
 )
 from app.repositories.plot_planning_repo import PlotPlanningRepo
+from app.retrieval.contracts import RetrievalProvider, RetrievalUnavailable, RetrievalRequest
 
 logger = logging.getLogger("novel_agent.plot_planning")
 
@@ -36,11 +37,13 @@ class PlotPlanningService:
         user_id: int,
         novel_id: int,
         generator: Optional[BaseWritingGenerator] = None,
+        retrieval: Optional[RetrievalProvider] = None,
     ):
         self.db = db
         self.user_id = user_id
         self.novel_id = novel_id
         self.generator = generator or DeepSeekWritingGenerator()
+        self.retrieval = retrieval
         self.repo = PlotPlanningRepo(db)
 
     @staticmethod
@@ -174,13 +177,43 @@ class PlotPlanningService:
             "start_state": unit.start_state,
             "end_state": unit.end_state,
         }
-        locked_chapters = [c for c in novel.chapters if c.status == "locked"]
+        locked_chapters = sorted(
+            (c for c in novel.chapters if c.status == "locked"),
+            key=lambda chapter: chapter.id,
+        )
         published_canon = {
             "chapters": [
-                {"id": c.id, "title": c.title, "content": c.content, "summary": c.summary}
-                for c in locked_chapters
+                {"id": c.id, "title": c.title, "summary": c.summary}
+                for c in locked_chapters[-3:]
             ]
         }
+
+        retrieved_context: list[dict] = []
+        risk_guard: list[dict] = []
+        if self.retrieval is not None:
+            query_parts = [
+                foundation.current_intent or "",
+                foundation.stage_goal or "",
+                unit.title or "",
+                unit.author_goal or "",
+                locked_chapters[-1].summary if locked_chapters else "",
+            ]
+            query = "；".join(part for part in query_parts if part) or "当前剧情规划"
+            try:
+                retrieval = await self.retrieval.retrieve(
+                    RetrievalRequest(
+                        user_id=self.user_id,
+                        novel_id=self.novel_id,
+                        query=query,
+                    )
+                )
+                retrieved_context = retrieval.writer_items
+                risk_guard = retrieval.guard_constraints
+            except RetrievalUnavailable:
+                logger.warning("plot planning retrieval unavailable; using structured anchors")
+
+        published_canon["retrieved_context"] = retrieved_context
+        published_canon["risk_guard"] = risk_guard
 
         try:
             plan_output = await self.generator.generate_plot_plan(foundation_data, plot_unit_data, published_canon)

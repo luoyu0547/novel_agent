@@ -238,17 +238,22 @@ class DeepSeekWritingGenerator(BaseWritingGenerator):
         brief = context_package.get("chapter_brief", {})
         contract = context_package.get("length_contract", {})
         expansion_hint = context_package.get("expansion_hint", "")
+        retrieved_context = context_package.get("retrieved_context", [])
+        risk_guard = context_package.get("risk_guard", [])
         prompt = f"""请根据以下章节任务书和上下文，写出一章小说正文。
 
 任务书：{json.dumps(brief, ensure_ascii=False)}
 字数要求：目标{contract.get('target_words', 3000)}字，最低{contract.get('min_words', 2000)}字
+相关已确认资料：{json.dumps(retrieved_context, ensure_ascii=False)}
+风险守卫约束：{json.dumps(risk_guard, ensure_ascii=False)}
 
 要求：
 1. 按章节任务书写正文，不要自由发挥成另一章
 2. 按篇幅充分展开场景、冲突、反应、动作、对话和氛围
 3. 不输出大纲、列表、总结或解释，只输出章节正文
 4. 如果篇幅不足，优先扩写场景过程和角色反应
-{('5. ' + expansion_hint) if expansion_hint else ''}"""
+5. 只使用已确认资料，不把风险守卫中的隐藏信息写成已知事实，不提前揭示伏笔真相
+{('6. ' + expansion_hint) if expansion_hint else ''}"""
         return await self._call_llm_text(prompt)
 
     async def rewrite_fragment(self, draft: str, location: str, context: str, intent: Optional[str] = None) -> str:
@@ -273,6 +278,8 @@ class DeepSeekWritingGenerator(BaseWritingGenerator):
         return await self._call_llm_text(prompt)
 
     async def generate_plot_plan(self, foundation: dict, plot_unit: dict, published_canon: dict) -> dict:
+        retrieved_context = published_canon.get("retrieved_context", [])
+        risk_guard = published_canon.get("risk_guard", [])
         prompt = f"""根据以下信息生成剧情规划方案，以 JSON 格式返回。
 
 author_foundation：
@@ -283,6 +290,12 @@ plot_unit：
 
 published_canon：
 {json.dumps(published_canon, ensure_ascii=False)}
+
+相关已确认资料：
+{json.dumps(retrieved_context, ensure_ascii=False)}
+
+风险守卫约束：
+{json.dumps(risk_guard, ensure_ascii=False)}
 
 返回 JSON 字段：
 - starting_state: 当前已发布事实和人物状态
@@ -301,10 +314,22 @@ published_canon：
 
     async def generate_draft_result(self, context_package: dict) -> DraftGenerationOutput:
         plot_plan = context_package.get("plot_plan", {})
+        brief = context_package.get("chapter_brief", {})
+        writer_context = context_package.get("retrieved_context", [])
+        risk_guard = context_package.get("risk_guard", [])
         prompt = f"""根据以下剧情规划方案生成正文草稿，以 JSON 格式返回。
 
 剧情规划：
 {json.dumps(plot_plan, ensure_ascii=False)}
+
+章节任务书：
+{json.dumps(brief, ensure_ascii=False)}
+
+相关已确认资料：
+{json.dumps(writer_context, ensure_ascii=False)}
+
+风险守卫约束：
+{json.dumps(risk_guard, ensure_ascii=False)}
 
 返回 JSON 字段：
 - status: "draft_ready" | "decision_required" | "unsafe_planning"
@@ -318,16 +343,29 @@ published_canon：
   - impact_scope: 影响范围
 - unsafe_reason: 如果状态为 unsafe_planning，说明原因
 
+生成正文时必须遵守风险守卫，不得把隐藏真相当作角色已知事实或提前揭示。
 当模型认为方案不足 2 个可执行选项时，将 status 设为 unsafe_planning。
 只返回 JSON。"""
         return await self._call_validated_json(prompt, DraftGenerationOutput)
 
     async def review_draft(self, context_package: dict, draft: str) -> DraftReviewOutput:
         plot_plan = context_package.get("plot_plan", {})
+        brief = context_package.get("chapter_brief", {})
+        writer_context = context_package.get("retrieved_context", [])
+        risk_guard = context_package.get("risk_guard", [])
         prompt = f"""请审查以下正文草稿是否存在冲突，以 JSON 格式返回。
 
 plot_plan：
 {json.dumps(plot_plan, ensure_ascii=False)}
+
+章节任务书：
+{json.dumps(brief, ensure_ascii=False)}
+
+相关已确认资料：
+{json.dumps(writer_context, ensure_ascii=False)}
+
+风险守卫约束：
+{json.dumps(risk_guard, ensure_ascii=False)}
 
 draft：
 {draft}
@@ -350,6 +388,8 @@ draft：
         return await self._call_validated_json(prompt, DraftReviewOutput)
 
     async def revise_draft(self, context_package: dict, draft: str, conflict: dict, selected_direction: str) -> LocalRevisionOutput:
+        writer_context = context_package.get("retrieved_context", [])
+        risk_guard = context_package.get("risk_guard", [])
         prompt = f"""根据冲突解决方案修订正文草稿，以 JSON 格式返回。
 
 draft：
@@ -359,6 +399,12 @@ conflict：
 {json.dumps(conflict, ensure_ascii=False)}
 
 selected_direction：{selected_direction}
+
+相关已确认资料：
+{json.dumps(writer_context, ensure_ascii=False)}
+
+风险守卫约束：
+{json.dumps(risk_guard, ensure_ascii=False)}
 
 impact_scope：
 {json.dumps(conflict.get("impact_scope", {}), ensure_ascii=False)}

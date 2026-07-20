@@ -104,7 +104,15 @@ class BaseQualityChecker(abc.ABC):
 
     def _build_prompt(self, draft: str, brief: dict, context: dict) -> str:
         brief_text = json.dumps(brief, ensure_ascii=False)
-        context_text = json.dumps(context, ensure_ascii=False)
+        # Diagnostics and source locators are for the immutable audit snapshot,
+        # not evidence the checker should reason over. Keep guard constraints
+        # explicit so each checker sees the same safety boundary as the writer.
+        prompt_context = {
+            key: value
+            for key, value in context.items()
+            if key != "snapshot"
+        }
+        context_text = json.dumps(prompt_context, ensure_ascii=False)
         return f"""你是一名严格的小说质量审稿编辑，只负责以下维度的审查：
 
 审查维度：{self.issue_type}
@@ -112,6 +120,9 @@ class BaseQualityChecker(abc.ABC):
 
 章节任务书：{brief_text}
 上下文（角色/世界观/前文摘要等）：{context_text}
+
+风险守卫约束（必须优先遵守）：
+{json.dumps(context.get("risk_guard", []), ensure_ascii=False)}
 
 草稿正文：
 {draft}

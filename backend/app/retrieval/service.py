@@ -59,6 +59,13 @@ def to_source_item(item: RetrievedSource, reason: str) -> dict[str, Any]:
     }
 
 
+def to_writer_context_item(item: RetrievedSource, reason: str) -> dict[str, Any]:
+    """Project a writer item with usable text but no retrieval scores."""
+    projected = to_source_item(item, reason)
+    projected["text"] = item.text or item.preview
+    return projected
+
+
 # ---------------------------------------------------------------------------
 # RetrievalService
 # ---------------------------------------------------------------------------
@@ -146,7 +153,9 @@ class RetrievalService:
 
         # Step 3: Rerank writer candidates
         reranked_writer = await self._rerank_candidates(
-            request.query, writer_candidates
+            request.query,
+            writer_candidates,
+            target_chapter_id=request.target_chapter_id,
         )
 
         # Step 4: Diversity filtering on writer items
@@ -171,7 +180,11 @@ class RetrievalService:
         )
 
     async def _rerank_candidates(
-        self, query: str, candidates: list[RetrievedSource]
+        self,
+        query: str,
+        candidates: list[RetrievedSource],
+        *,
+        target_chapter_id: int | None = None,
     ) -> list[RetrievedSource]:
         """Rerank candidates and return them in reranked order.
 
@@ -196,6 +209,11 @@ class RetrievalService:
         for i, candidate in enumerate(candidates):
             if i not in seen_indices:
                 reranked.append(candidate)
+
+        if target_chapter_id is not None:
+            # Keep reranker order within each group, while preferring sources
+            # from the chapter currently being extracted or revised.
+            reranked.sort(key=lambda candidate: candidate.chapter_id != target_chapter_id)
 
         return reranked
 
@@ -251,7 +269,7 @@ class RetrievalService:
 
             seen_ids.add(candidate.source_id)
             estimated_tokens += token_estimate
-            items.append(to_source_item(candidate, reason="retrieved"))
+            items.append(to_writer_context_item(candidate, reason="retrieved"))
 
         # Pass 2: Try to include deferred high-importance items
         for candidate in deferred:
@@ -264,7 +282,7 @@ class RetrievalService:
                 continue
             seen_ids.add(candidate.source_id)
             estimated_tokens += token_estimate
-            items.append(to_source_item(candidate, reason="retrieved"))
+            items.append(to_writer_context_item(candidate, reason="retrieved"))
 
         return items
 
@@ -287,9 +305,12 @@ class RetrievalService:
                 continue
 
             seen_ids.add(candidate.source_id)
-            constraints.append(
-                to_source_item(candidate, reason="guard_constraint")
+            item = to_source_item(candidate, reason="guard_constraint")
+            item["constraint"] = (
+                f"本章不得提前确认或揭示‘{candidate.title}’对应的隐藏真相；"
+                "请遵守该伏笔当前状态。"
             )
+            constraints.append(item)
 
         return constraints
 
@@ -310,13 +331,33 @@ class RetrievalService:
             sid = item["source_id"]
             if sid not in seen_ids:
                 seen_ids.add(sid)
-                combined.append(item)
+                combined.append({
+                    key: item[key]
+                    for key in (
+                        "source_id",
+                        "source_type",
+                        "title",
+                        "locator",
+                        "preview",
+                        "inclusion_reason",
+                    )
+                })
 
         for item in guard_constraints:
             sid = item["source_id"]
             if sid not in seen_ids:
                 seen_ids.add(sid)
-                combined.append(item)
+                combined.append({
+                    key: item[key]
+                    for key in (
+                        "source_id",
+                        "source_type",
+                        "title",
+                        "locator",
+                        "preview",
+                        "inclusion_reason",
+                    )
+                })
 
         return combined
 

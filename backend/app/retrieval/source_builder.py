@@ -404,6 +404,16 @@ class CanonicalSourceBuilder:
             if fs.expected_reveal_chapter_id:
                 guard_parts.append(f"预计揭示章节：{fs.expected_reveal_chapter_id}")
             guard_text = "\n".join(guard_parts)
+            guard_preview = "\n".join(
+                part
+                for part in (
+                    f"名称：{fs.name}",
+                    f"描述：{fs.description}",
+                    f"状态：{fs.status}",
+                    f"风险提示：{fs.risk_warning}" if fs.risk_warning else "",
+                )
+                if part
+            )
 
             sources.append(self._make_source(
                 source_id=f"foreshadowing:{fs.id}:guard",
@@ -415,6 +425,7 @@ class CanonicalSourceBuilder:
                 visibility="guard",
                 locator={"foreshadowing_id": fs.id, "type": "guard", "chapter_id": fs.planted_chapter_id},
                 tenant_key=tenant_key,
+                preview_text=guard_preview,
             ))
 
         return sources
@@ -434,6 +445,7 @@ class CanonicalSourceBuilder:
         locator: dict,
         tenant_key: str,
         importance: str = "minor",
+        preview_text: str | None = None,
     ) -> RetrievalSource:
         """Create a :class:`RetrievalSource` with computed hash and point_id."""
         chash = _content_hash(text)
@@ -444,7 +456,7 @@ class CanonicalSourceBuilder:
             chapter_id=chapter_id,
             title=title,
             text=text,
-            preview=_preview(text),
+            preview=_preview(preview_text if preview_text is not None else text),
             visibility=visibility,
             locator=locator,
             content_hash=chash,

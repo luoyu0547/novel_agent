@@ -18,6 +18,8 @@ from app.core.config import settings
 from app.services.quality_gate_service import QualityGateService
 from app.core.exceptions import BadRequest, NotFound, AppException
 from app.models.novel import Novel, Chapter
+from app.models.foreshadowing import Foreshadowing
+from app.models.plot_fact import PlotFact
 from app.models.quality_gate import ReviewIssue
 from app.models.writing import NovelBlueprint, ChapterPlan, ChapterBrief, ContextPackage, WritingRun
 from app.repositories.novel_repo import NovelRepo
@@ -228,7 +230,7 @@ class WritingService:
         return result
 
     async def _build_context_package(self, novel: Novel, brief: ChapterBrief, *, author_input: str = "") -> dict:
-        chapters = novel.chapters or []
+        chapters = sorted(novel.chapters or [], key=lambda chapter: chapter.id)
         previous_chapter = chapters[-1] if chapters else None
         package = {
             "blueprint_summary": "",
@@ -255,6 +257,34 @@ class WritingService:
                 {"title": ws.title, "category": ws.category, "content": ws.content}
                 for ws in novel.world_settings
             ]
+
+        plot_facts_result = await self.db.execute(
+            select(PlotFact).where(PlotFact.novel_id == self.novel_id)
+        )
+        package["plot_facts"] = [
+            {
+                "id": fact.id,
+                "fact_type": fact.fact_type,
+                "content": fact.content,
+                "importance": fact.importance,
+            }
+            for fact in plot_facts_result.scalars().all()
+        ]
+
+        foreshadowings_result = await self.db.execute(
+            select(Foreshadowing).where(Foreshadowing.novel_id == self.novel_id)
+        )
+        # The writing model receives only the observable signal. Hidden truth
+        # and risk wording stay in the guard-only retrieval projection.
+        package["foreshadowings"] = [
+            {
+                "id": foreshadowing.id,
+                "name": foreshadowing.name,
+                "description": foreshadowing.description,
+                "status": foreshadowing.status,
+            }
+            for foreshadowing in foreshadowings_result.scalars().all()
+        ]
 
         # Enrich with retrieval if available
         package = await self._enrich_legacy_package_with_retrieval(
@@ -687,21 +717,15 @@ class WritingService:
         if not run.context_snapshot_json:
             raise AppException("写作运行没有上下文快照")
 
-        snapshot = run.context_snapshot_json
-        plot_plan = {}
-        plot_plan_revision_id = snapshot.get("plot_plan_revision_id")
-        if plot_plan_revision_id:
-            from app.repositories.plot_planning_repo import PlotPlanningRepo
-            pp_repo = PlotPlanningRepo(self.db)
-            revision = await pp_repo.get_plan_revision(plot_plan_revision_id, self.novel_id)
-            if revision:
-                plot_plan = revision.plan_json
-
-        context = {
-            "plot_plan": plot_plan,
-            "published_canon": snapshot.get("published_canon", {}),
-            "snapshot": snapshot,
-        }
+        context_package = await self.context_repo.get_by_id(run.context_package_id)
+        if context_package and context_package.novel_id == self.novel_id:
+            # Review the exact package used for generation. Do not re-query
+            # current memory or Qdrant and silently change old evidence.
+            context = copy.deepcopy(context_package.package_json)
+        else:
+            # Preserve reviewability for runs created before context packages
+            # were persisted as a separate row.
+            context = {"snapshot": copy.deepcopy(run.context_snapshot_json)}
 
         try:
             review = await self.generator.review_draft(context, run.draft_content)
